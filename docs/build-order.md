@@ -12,12 +12,12 @@ For each type (SimpleString, Error, Integer, BulkString, Null, Array):
 - [x] Green
 
 ### 1b: Decoding
-- [ ] Write test: decode a valid Simple String from bytes, assert Frame + bytes consumed
-- [ ] Implement decode for Simple String
-- [ ] Write test: decode a valid Error
-- [ ] Implement
-- [ ] Write test: decode a valid Integer
-- [ ] Implement
+- [x] Write test: decode a valid Simple String from bytes, assert Frame + bytes consumed
+- [x] Implement decode for Simple String
+- [x] Write test: decode a valid Error
+- [x] Implement
+- [x] Write test: decode a valid Integer
+- [x] Implement
 - [ ] Write test: decode a valid Bulk String (including empty: `$0\r\n\r\n`)
 - [ ] Implement
 - [ ] Write test: decode Null (`$-1\r\n`)

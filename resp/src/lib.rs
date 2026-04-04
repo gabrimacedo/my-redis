@@ -1,4 +1,4 @@
-use std::io::Write;
+use std::io::{BufRead, Cursor, Read, Write};
 
 #[derive(PartialEq, Debug)]
 enum Frame {
@@ -36,10 +36,96 @@ impl Frame {
             Frame::Null => b"$-1\r\n".to_vec(),
         }
     }
+    fn decode(mut bytes: &[u8]) -> (Self, usize) {
+        let mut first_byte = [0; 1];
+        let mut cursor = Cursor::new(bytes);
+        let _ = cursor.read_exact(&mut first_byte);
+
+        match first_byte[0] {
+            b'+' => {
+                let mut buf = Vec::new();
+                let n = cursor.read_until(b'\r', &mut buf).unwrap();
+                buf.pop();
+
+                let s = String::from_utf8(buf).unwrap();
+                (Frame::SimpleString(s), n + 2)
+            }
+            b'-' => {
+                let c = Cursor::new(bytes);
+
+                let mut buf = Vec::new();
+                let n = cursor.read_until(b'\r', &mut buf).unwrap();
+                buf.pop();
+
+                let s = String::from_utf8(buf).unwrap();
+                (Frame::Error(s), n + 2)
+            }
+            b':' => {
+                let mut buf = Vec::new();
+                let n = cursor.read_until(b'\r', &mut buf).unwrap();
+                buf.pop();
+                let s = str::from_utf8(&buf).unwrap();
+                let num: i64 = s.parse().unwrap();
+
+                (Frame::Integer(num), n + 2)
+            }
+            b'$' => {
+                todo!()
+            }
+            b'*' => todo!(),
+            _ => todo!(),
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    mod decoding_produces_frame {
+        use super::super::*;
+
+        #[test]
+        fn simple_string() {
+            let b = b"+PONG\r\n";
+            let (f, _) = Frame::decode(b);
+            assert_eq!(f, Frame::SimpleString("PONG".to_string()));
+
+            let b = b"+OK\r\n+PING\r\n";
+            let (f, consumed) = Frame::decode(b);
+            let (f2, _) = Frame::decode(&b[consumed..]);
+            assert_eq!(f, Frame::SimpleString("OK".to_string()));
+            assert_eq!(f2, Frame::SimpleString("PING".to_string()));
+        }
+
+        #[test]
+        fn error() {
+            let b = b"-ERR unknown command 'FOO'\r\n";
+            let (f, consumed) = Frame::decode(b);
+
+            assert_eq!(f, Frame::Error("ERR unknown command 'FOO'".to_string()));
+            assert_eq!(consumed, 28);
+        }
+
+        #[test]
+        fn integer() {
+            let b = b":42\r\n";
+            let (f, consumed) = Frame::decode(b);
+
+            assert_eq!(f, Frame::Integer(42));
+            assert_eq!(consumed, 5);
+        }
+
+        #[test]
+        fn bulk_string() {
+            let b = b"$26\r\nhello world, how are you!?\r\n";
+            let long = Frame::BulkString(b"hello world, how are you!?".to_vec());
+
+            let (f, consumed) = Frame::decode(b);
+
+            assert_eq!(f, long);
+            // assert_eq!(consumed, 5);
+        }
+    }
+
     mod encoding_produces_prefix_and_crlf {
         use super::super::*;
 
