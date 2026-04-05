@@ -18,12 +18,12 @@ For each type (SimpleString, Error, Integer, BulkString, Null, Array):
 - [x] Implement
 - [x] Write test: decode a valid Integer
 - [x] Implement
-- [ ] Write test: decode a valid Bulk String (including empty: `$0\r\n\r\n`)
-- [ ] Implement
-- [ ] Write test: decode Null (`$-1\r\n`)
-- [ ] Implement
-- [ ] Write test: decode a valid Array (including empty and nested)
-- [ ] Implement
+- [x] Write test: decode a valid Bulk String (including empty: `$0\r\n\r\n`)
+- [x] Implement
+- [x] Write test: decode Null (`$-1\r\n`)
+- [x] Implement
+- [x] Write test: decode a valid Array (including empty and nested)
+- [x] Implement
 
 ### 1c: Edge cases
 - [ ] Write test: decode partial input (truncated mid-frame) returns Incomplete
