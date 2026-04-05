@@ -1,4 +1,4 @@
-use std::io::{BufRead, Read};
+use std::io::{BufRead, Read, Write};
 
 #[derive(PartialEq, Debug)]
 enum Frame {
