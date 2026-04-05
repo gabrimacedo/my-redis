@@ -1,4 +1,4 @@
-use std::io::{BufRead, Cursor, Read, Write};
+use std::io::{BufRead, Read};
 
 #[derive(PartialEq, Debug)]
 enum Frame {
@@ -38,23 +38,21 @@ impl Frame {
     }
     fn decode(mut bytes: &[u8]) -> (Self, usize) {
         let mut first_byte = [0; 1];
-        let mut cursor = Cursor::new(bytes);
-        let _ = cursor.read_exact(&mut first_byte);
+        let _ = bytes.read_exact(&mut first_byte);
 
         match first_byte[0] {
             b'+' => {
                 let mut buf = Vec::new();
-                let n = cursor.read_until(b'\r', &mut buf).unwrap();
+                let n = bytes.read_until(b'\r', &mut buf).unwrap();
                 buf.pop();
 
                 let s = String::from_utf8(buf).unwrap();
                 (Frame::SimpleString(s), n + 2)
             }
             b'-' => {
-                let c = Cursor::new(bytes);
 
                 let mut buf = Vec::new();
-                let n = cursor.read_until(b'\r', &mut buf).unwrap();
+                let n = bytes.read_until(b'\r', &mut buf).unwrap();
                 buf.pop();
 
                 let s = String::from_utf8(buf).unwrap();
@@ -62,7 +60,7 @@ impl Frame {
             }
             b':' => {
                 let mut buf = Vec::new();
-                let n = cursor.read_until(b'\r', &mut buf).unwrap();
+                let n = bytes.read_until(b'\r', &mut buf).unwrap();
                 buf.pop();
                 let s = str::from_utf8(&buf).unwrap();
                 let num: i64 = s.parse().unwrap();
