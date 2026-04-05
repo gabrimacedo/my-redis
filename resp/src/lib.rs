@@ -50,7 +50,6 @@ impl Frame {
                 (Frame::SimpleString(s), n + 2)
             }
             b'-' => {
-
                 let mut buf = Vec::new();
                 let n = bytes.read_until(b'\r', &mut buf).unwrap();
                 buf.pop();
@@ -153,7 +152,6 @@ mod tests {
             let long = Frame::BulkString(b"hello world, how are you!?".to_vec());
 
             let (f, consumed) = Frame::decode(b);
-
             assert_eq!(f, long);
             assert_eq!(consumed, 33);
 
@@ -163,6 +161,16 @@ mod tests {
             let (f, consumed) = Frame::decode(b);
             assert_eq!(f, empty);
             assert_eq!(consumed, 6);
+        }
+
+        #[test]
+        fn null() {
+            let b = b"$-1\r\n";
+            let expected = Frame::Null;
+
+            let (f, consumed) = Frame::decode(b);
+            assert_eq!(f, expected);
+            assert_eq!(consumed, 5);
         }
 
         #[test]
