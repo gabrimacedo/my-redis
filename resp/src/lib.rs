@@ -84,7 +84,28 @@ impl Frame {
 
                 (Frame::BulkString(data), n + (count as usize) + 3)
             }
-            b'*' => todo!(),
+            b'*' => {
+                let mut count = Vec::new();
+                let n = bytes.read_until(b'\n', &mut count).unwrap();
+                count.pop();
+                count.pop();
+                let count = String::from_utf8(count).unwrap();
+                let count: i64 = count.parse().unwrap();
+
+                if count == -1 {
+                    return (Frame::Null, 5);
+                }
+
+                let mut arr: Vec<Frame> = Vec::new();
+                let mut cursor = 0;
+                for _ in 0..count {
+                    let (f, consumed) = Self::decode(&bytes[cursor..]);
+                    arr.push(f);
+                    cursor += consumed;
+                }
+
+                (Frame::Array(arr), cursor + n + 1)
+            }
             _ => todo!(),
         }
     }
@@ -142,6 +163,52 @@ mod tests {
             let (f, consumed) = Frame::decode(b);
             assert_eq!(f, empty);
             assert_eq!(consumed, 6);
+        }
+
+        #[test]
+        fn array() {
+            let b = b"*3\r\n$3\r\nSET\r\n$5\r\nmykey\r\n$5\r\nhello\r\n+OK\r\n";
+            let expected = Frame::Array(Vec::from([
+                Frame::BulkString(b"SET".to_vec()),
+                Frame::BulkString(b"mykey".to_vec()),
+                Frame::BulkString(b"hello".to_vec()),
+            ]));
+
+            let (f, consumed) = Frame::decode(b);
+            assert_eq!(f, expected);
+            assert_eq!(consumed, 35);
+
+            // empty
+            let b = b"*0\r\n";
+            let empty = Frame::Array(Vec::new());
+
+            let (f, consumed) = Frame::decode(b);
+            assert_eq!(f, empty);
+            assert_eq!(consumed, 4);
+
+            // negative (null)
+            let b = b"*-1\r\n";
+            let expected = Frame::Null;
+
+            let (f, consumed) = Frame::decode(b);
+            assert_eq!(f, expected);
+            assert_eq!(consumed, 5);
+
+            // nested
+            // Input bytes: an array containing [integer 1, array [simple string "OK", integer 2]]
+            let b = b"*2\r\n:1\r\n*2\r\n+OK\r\n:2\r\n";
+
+            let expected = Frame::Array(vec![
+                Frame::Integer(1),
+                Frame::Array(vec![
+                    Frame::SimpleString("OK".to_string()),
+                    Frame::Integer(2),
+                ]),
+            ]);
+
+            let (f, consumed) = Frame::decode(b);
+            assert_eq!(f, expected);
+            assert_eq!(consumed, 21);
         }
     }
 
