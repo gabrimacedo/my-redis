@@ -68,7 +68,21 @@ impl Frame {
                 (Frame::Integer(num), n + 2)
             }
             b'$' => {
-                todo!()
+                let mut length = Vec::new();
+                let n = bytes.read_until(b'\n', &mut length).unwrap();
+                length.pop();
+                length.pop();
+                let count = String::from_utf8(length).unwrap();
+                let count: i64 = count.parse().unwrap();
+
+                if count == -1 {
+                    return (Frame::Null, 5);
+                }
+
+                let mut data = vec![0; count as usize];
+                bytes.read_exact(&mut data).unwrap();
+
+                (Frame::BulkString(data), n + (count as usize) + 3)
             }
             b'*' => todo!(),
             _ => todo!(),
@@ -120,7 +134,14 @@ mod tests {
             let (f, consumed) = Frame::decode(b);
 
             assert_eq!(f, long);
-            // assert_eq!(consumed, 5);
+            assert_eq!(consumed, 33);
+
+            let b = b"$0\r\n\r\n";
+            let empty = Frame::BulkString(b"".to_vec());
+
+            let (f, consumed) = Frame::decode(b);
+            assert_eq!(f, empty);
+            assert_eq!(consumed, 6);
         }
     }
 
