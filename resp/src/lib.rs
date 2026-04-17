@@ -1,17 +1,19 @@
-use std::io::{BufRead, Read, Write};
+use std::io::{self, BufRead, Read, Result, Write};
 
-#[derive(PartialEq, Debug)]
-enum Frame {
+#[derive(PartialEq, Debug, Hash, Eq)]
+pub enum Frame {
     Integer(i64),
     SimpleString(String),
     BulkString(Vec<u8>),
     Error(String),
     Null,
     Array(Vec<Frame>),
+    Incomplete,
 }
 
 impl Frame {
-    fn encode(&self) -> Vec<u8> {
+    /// encode stream of bytes from a Frame
+    pub fn encode(&self) -> Vec<u8> {
         match self {
             Frame::Integer(i) => format!(":{i}\r\n").as_bytes().to_vec(),
             Frame::SimpleString(s) => format!("+{s}\r\n").as_bytes().to_vec(),
@@ -34,60 +36,87 @@ impl Frame {
                 buf
             }
             Frame::Null => b"$-1\r\n".to_vec(),
+            Frame::Incomplete => todo!(),
         }
     }
-    fn decode(mut bytes: &[u8]) -> (Self, usize) {
+
+    fn find_delimiter(src: &mut &[u8], buf: &mut Vec<u8>) -> Result<usize> {
+        let n = src.read_until(b'\n', buf)?;
+
+        if buf.last() != Some(&(b'\n')) {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "missing CRLF"));
+        }
+
+        // remove crlf from the buffer
+        buf.pop();
+        buf.pop();
+
+        Ok(n)
+    }
+
+    /// decode possible Frame from stream of bytes
+    pub fn decode(mut bytes: &[u8]) -> (Self, usize) {
+        // read first byte, so to "consume" it and move the cursor
         let mut first_byte = [0; 1];
         let _ = bytes.read_exact(&mut first_byte);
 
         match first_byte[0] {
             b'+' => {
                 let mut buf = Vec::new();
-                let n = bytes.read_until(b'\r', &mut buf).unwrap();
-                buf.pop();
+                let Ok(n) = Self::find_delimiter(&mut bytes, &mut buf) else {
+                    return (Frame::Incomplete, 0);
+                };
 
                 let s = String::from_utf8(buf).unwrap();
-                (Frame::SimpleString(s), n + 2)
+                (Frame::SimpleString(s), n + 1)
             }
             b'-' => {
                 let mut buf = Vec::new();
-                let n = bytes.read_until(b'\r', &mut buf).unwrap();
-                buf.pop();
+                let Ok(n) = Self::find_delimiter(&mut bytes, &mut buf) else {
+                    return (Frame::Incomplete, 0);
+                };
 
                 let s = String::from_utf8(buf).unwrap();
-                (Frame::Error(s), n + 2)
+                (Frame::Error(s), n + 1)
             }
             b':' => {
                 let mut buf = Vec::new();
-                let n = bytes.read_until(b'\r', &mut buf).unwrap();
-                buf.pop();
+                let Ok(n) = Self::find_delimiter(&mut bytes, &mut buf) else {
+                    return (Frame::Incomplete, 0);
+                };
+
                 let s = str::from_utf8(&buf).unwrap();
                 let num: i64 = s.parse().unwrap();
 
-                (Frame::Integer(num), n + 2)
+                (Frame::Integer(num), n + 1)
             }
             b'$' => {
                 let mut length = Vec::new();
-                let n = bytes.read_until(b'\n', &mut length).unwrap();
-                length.pop();
-                length.pop();
+                let Ok(n) = Self::find_delimiter(&mut bytes, &mut length) else {
+                    return (Frame::Incomplete, 0);
+                };
+
                 let count = String::from_utf8(length).unwrap();
-                let count: i64 = count.parse().unwrap();
+                let Ok(count) = count.parse::<i64>() else {
+                    return (Frame::Error("invalid length".to_string()), 0);
+                };
 
                 if count == -1 {
                     return (Frame::Null, 5);
                 }
 
                 let mut data = vec![0; count as usize];
-                bytes.read_exact(&mut data).unwrap();
+                if bytes.read_exact(&mut data).is_err() {
+                    return (Frame::Incomplete, 0);
+                }
 
                 (Frame::BulkString(data), n + (count as usize) + 3)
             }
             b'*' => {
                 let mut count = Vec::new();
-                let n = bytes.read_until(b'\n', &mut count).unwrap();
-                count.pop();
-                count.pop();
+                let Ok(n) = Self::find_delimiter(&mut bytes, &mut count) else {
+                    return (Frame::Incomplete, 0);
+                };
                 let count = String::from_utf8(count).unwrap();
                 let count: i64 = count.parse().unwrap();
 
@@ -105,13 +134,62 @@ impl Frame {
 
                 (Frame::Array(arr), cursor + n + 1)
             }
-            _ => todo!(),
+            _ => (Frame::Error("invalid prefix".to_string()), 0),
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::Frame;
+
+    #[test]
+    fn round_trip_encode_decode_produces_original_frame() {
+        let original = Frame::Array(vec![
+            Frame::Integer(1),
+            Frame::Array(vec![
+                Frame::SimpleString("OK".to_string()),
+                Frame::Integer(2),
+            ]),
+        ]);
+
+        let encoded = original.encode();
+        let (expected, consumed) = Frame::decode(&encoded);
+
+        assert_eq!(original, expected);
+        assert_eq!(consumed, 21);
+    }
+
+    #[test]
+    fn decoding_partial_frame_returns_incomplete() {
+        let b = b"$11\r\nHe";
+        let expected = Frame::Incomplete;
+
+        let (f, consumed) = Frame::decode(b);
+
+        assert_eq!(f, expected);
+        assert_eq!(consumed, 0);
+
+        let b = b"+OK\r";
+        let expected = Frame::Incomplete;
+
+        let (f, consumed) = Frame::decode(b);
+
+        assert_eq!(f, expected);
+        assert_eq!(consumed, 0);
+    }
+
+    #[test]
+    fn decoding_invalid_prefix_returns_error() {
+        let b = b"#11\r\nHe";
+        let expected = Frame::Error("invalid prefix".to_string());
+
+        let (f, consumed) = Frame::decode(b);
+
+        assert_eq!(f, expected);
+        assert_eq!(consumed, 0)
+    }
+
     mod decoding_produces_frame {
         use super::super::*;
 
@@ -174,6 +252,17 @@ mod tests {
 
         mod bulk_string {
             use crate::Frame;
+
+            #[test]
+            fn non_numeric_length_returns_error() {
+                let b = b"$2f\r\nhello world, how are you!?\r\n";
+                let expected = Frame::Error("invalid length".to_string());
+
+                let (f, consumed) = Frame::decode(b);
+
+                assert_eq!(f, expected);
+                assert_eq!(consumed, 0);
+            }
 
             #[test]
             fn non_empty() {
