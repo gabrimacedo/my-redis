@@ -16,6 +16,8 @@ pub enum Command {
     Echo(String),
     Set { key: String, value: String },
     Get { key: String },
+    Del { keys: Vec<String> },
+    Exists { keys: Vec<String> },
 }
 
 impl Command {
@@ -34,7 +36,7 @@ impl Command {
             })
             .collect();
         let mut args = args?;
-        let cmd = args.remove(0);
+        let cmd = args.remove(0).to_uppercase();
 
         match cmd.as_str() {
             "PING" => {
@@ -66,6 +68,18 @@ impl Command {
                     key: args[0].clone(),
                 })
             }
+            "DEL" => {
+                if args.is_empty() {
+                    return Err("ERR wrong number of arguments for 'DEL' command".to_string());
+                }
+                Ok(Command::Del { keys: args })
+            }
+            "EXISTS" => {
+                if args.is_empty() {
+                    return Err("ERR wrong number of arguments for 'EXISTS' command".to_string());
+                }
+                Ok(Command::Exists { keys: args })
+            }
             _ => Err(format!("ERR unknown command '{}'", cmd)),
         }
     }
@@ -88,6 +102,22 @@ impl Command {
                 Some(value) => Frame::BulkString(value.as_bytes().to_vec()),
                 None => Frame::Null,
             },
+            Command::Del { keys } => {
+                let count = keys.iter().fold(0, |acc, k| {
+                    if map.remove(k).is_none() {
+                        acc
+                    } else {
+                        acc + 1
+                    }
+                });
+                Frame::Integer(count)
+            }
+            Command::Exists { keys } => {
+                let count = keys
+                    .iter()
+                    .fold(0, |acc, k| if map.get(k).is_none() { acc } else { acc + 1 });
+                Frame::Integer(count)
+            }
         }
     }
 }
