@@ -84,15 +84,15 @@ For each type (SimpleString, Error, Integer, BulkString, Null, Array):
 ## Step 4: DEL / EXISTS / Expiration
 
 ### 4a: DEL
-- [ ] Write test: SET two keys, DEL both, expect `:2\r\n`
-- [ ] Write test: DEL nonexistent key, expect `:0\r\n`
-- [ ] Green
+- [x] Write test: SET two keys, DEL both, expect `:2\r\n`
+- [x] Write test: DEL nonexistent key, expect `:0\r\n`
+- [x] Green
 
 ### 4b: EXISTS
-- [ ] Write test: SET a key, EXISTS returns `:1\r\n`
-- [ ] Write test: EXISTS nonexistent returns `:0\r\n`
-- [ ] Write test: EXISTS same key twice returns `:2\r\n`
-- [ ] Green
+- [x] Write test: SET a key, EXISTS returns `:1\r\n`
+- [x] Write test: EXISTS nonexistent returns `:0\r\n`
+- [x] Write test: EXISTS same key twice returns `:2\r\n`
+- [x] Green
 
 ### 4c: SET with EX/PX
 - [ ] Write test: SET key EX 1, GET immediately returns value
