@@ -30,7 +30,10 @@ async fn send_cmd(conn: &mut TcpStream, cmd: &[u8]) -> Frame {
 }
 
 mod integration_test {
+    use std::time::Duration;
+
     use resp::Frame;
+    use tokio::time::sleep;
 
     use crate::{connect_to_server, send_cmd, spawn_server};
 
@@ -327,6 +330,115 @@ mod integration_test {
         let _ = send_cmd(&mut client, &set_cmd).await;
         let resp = send_cmd(&mut client, &exists_cmd).await;
         let expected = Frame::Integer(2);
+
+        assert_eq!(resp, expected);
+    }
+
+    #[tokio::test]
+    async fn set_with_ex_1_get_immediately_returns_value() {
+        let addr = spawn_server().await;
+        let mut client = connect_to_server(addr).await;
+
+        let set_cmd = Frame::Array(vec![
+            Frame::BulkString(b"SET".to_vec()),
+            Frame::BulkString(b"so".to_vec()),
+            Frame::BulkString(b"quick".to_vec()),
+            Frame::BulkString(b"EX".to_vec()),
+            Frame::BulkString(b"1".to_vec()),
+        ])
+        .encode();
+        let get_cmd = Frame::Array(vec![
+            Frame::BulkString(b"GET".to_vec()),
+            Frame::BulkString(b"so".to_vec()),
+        ])
+        .encode();
+
+        let _ = send_cmd(&mut client, &set_cmd).await;
+        let resp = send_cmd(&mut client, &get_cmd).await;
+        let expected = Frame::BulkString(b"quick".to_vec());
+
+        assert_eq!(resp, expected);
+    }
+
+    #[tokio::test]
+    async fn set_with_expires_after_ttl_returns_null() {
+        let addr = spawn_server().await;
+        let mut client = connect_to_server(addr).await;
+
+        let set_cmd = Frame::Array(vec![
+            Frame::BulkString(b"SET".to_vec()),
+            Frame::BulkString(b"so".to_vec()),
+            Frame::BulkString(b"quick".to_vec()),
+            Frame::BulkString(b"EX..".to_vec()),
+            Frame::BulkString(b"1".to_vec()),
+        ])
+        .encode();
+        let get_cmd = Frame::Array(vec![
+            Frame::BulkString(b"GET".to_vec()),
+            Frame::BulkString(b"so".to_vec()),
+        ])
+        .encode();
+
+        let _ = send_cmd(&mut client, &set_cmd).await;
+        sleep(Duration::from_millis(1100)).await;
+        let resp = send_cmd(&mut client, &get_cmd).await;
+        let expected = Frame::Null;
+
+        assert_eq!(resp, expected);
+    }
+
+    #[tokio::test]
+    async fn set_with_px_expires_after_ttl() {
+        let addr = spawn_server().await;
+        let mut client = connect_to_server(addr).await;
+
+        let set_cmd = Frame::Array(vec![
+            Frame::BulkString(b"SET".to_vec()),
+            Frame::BulkString(b"so".to_vec()),
+            Frame::BulkString(b"quick".to_vec()),
+            Frame::BulkString(b"PX..".to_vec()),
+            Frame::BulkString(b"100".to_vec()),
+        ])
+        .encode();
+        let get_cmd = Frame::Array(vec![
+            Frame::BulkString(b"GET".to_vec()),
+            Frame::BulkString(b"so".to_vec()),
+        ])
+        .encode();
+
+        let _ = send_cmd(&mut client, &set_cmd).await;
+        sleep(Duration::from_millis(150)).await;
+        let resp = send_cmd(&mut client, &get_cmd).await;
+        let expected = Frame::Null;
+
+        assert_eq!(resp, expected);
+    }
+
+    #[tokio::test]
+    async fn set_with_ex_and_px_returns_error() {
+        let addr = spawn_server().await;
+        let mut client = connect_to_server(addr).await;
+
+        let set_cmd = Frame::Array(vec![
+            Frame::BulkString(b"SET".to_vec()),
+            Frame::BulkString(b"so".to_vec()),
+            Frame::BulkString(b"quick".to_vec()),
+            Frame::BulkString(b"EX..".to_vec()),
+            Frame::BulkString(b"10".to_vec()),
+            Frame::BulkString(b"PX..".to_vec()),
+            Frame::BulkString(b"10000".to_vec()),
+        ])
+        .encode();
+        let get_cmd = Frame::Array(vec![
+            Frame::BulkString(b"GET".to_vec()),
+            Frame::BulkString(b"so".to_vec()),
+        ])
+        .encode();
+
+        let _ = send_cmd(&mut client, &set_cmd).await;
+        sleep(Duration::from_millis(150)).await;
+        let resp = send_cmd(&mut client, &get_cmd).await;
+        let expected = Frame::Null;
 
         assert_eq!(resp, expected);
     }

@@ -95,11 +95,11 @@ For each type (SimpleString, Error, Integer, BulkString, Null, Array):
 - [x] Green
 
 ### 4c: SET with EX/PX
-- [ ] Write test: SET key EX 1, GET immediately returns value
-- [ ] Write test: SET key EX 1, sleep >1s, GET returns Null
-- [ ] Write test: SET key PX 100, sleep >100ms, GET returns Null
-- [ ] Write test: SET key EX 10 PX 10000, expect error
-- [ ] Green
+- [x] Write test: SET key EX 1, GET immediately returns value
+- [x] Write test: SET key EX 1, sleep >1s, GET returns Null
+- [x] Write test: SET key PX 100, sleep >100ms, GET returns Null
+- [x] Write test: SET key EX 10 PX 10000, expect error
+- [x] Green
 
 ### 4d: TTL
 - [ ] Write test: SET key EX 10, TTL returns positive integer
