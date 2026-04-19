@@ -1,4 +1,7 @@
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+};
 
 use resp::Frame;
 use tokio::{
@@ -11,13 +14,29 @@ use tokio::{
     },
 };
 
+#[derive(Debug)]
+pub struct Entry {
+    data: String,
+    expires_at: Option<Instant>,
+}
+
 pub enum Command {
     Ping(Option<String>),
     Echo(String),
-    Set { key: String, value: String },
-    Get { key: String },
-    Del { keys: Vec<String> },
-    Exists { keys: Vec<String> },
+    Set {
+        key: String,
+        value: String,
+        expires_at: Option<Instant>,
+    },
+    Get {
+        key: String,
+    },
+    Del {
+        keys: Vec<String>,
+    },
+    Exists {
+        keys: Vec<String>,
+    },
 }
 
 impl Command {
@@ -58,6 +77,7 @@ impl Command {
                 Ok(Command::Set {
                     key: args[0].clone(),
                     value: args[1].clone(),
+                    expires_at: Command::get_expiry(&args[2..])?,
                 })
             }
             "GET" => {
@@ -84,7 +104,58 @@ impl Command {
         }
     }
 
-    pub fn execute(self, map: &mut HashMap<String, String>) -> Frame {
+    fn get_expiry(opts: &[String]) -> Result<Option<Instant>, String> {
+        enum Opt {
+            Ex(Instant),
+            Px(Instant),
+            None,
+        }
+        let mut exp = Opt::None;
+        let mut iter = opts.chunks_exact(2);
+
+        for s in iter.by_ref() {
+            match s[0].as_str() {
+                "EX" => {
+                    if let Opt::Px(_) = exp {
+                        return Err(
+                            "ERR EX and PX options at the same time are not compatible".to_string()
+                        );
+                    }
+                    let n = s[1]
+                        .as_str()
+                        .parse::<u64>()
+                        .map_err(|_| "Err value is not an integer or out of range".to_string())?;
+
+                    exp = Opt::Ex(Instant::now() + Duration::from_secs(n));
+                }
+                "PX" => {
+                    if let Opt::Ex(_) = exp {
+                        return Err(
+                            "ERR PX and EX options at the same time are not compatible".to_string()
+                        );
+                    }
+                    let n = s[1]
+                        .as_str()
+                        .parse::<u64>()
+                        .map_err(|_| "Err value is not an integer or out of range".to_string())?;
+
+                    exp = Opt::Px(Instant::now() + Duration::from_millis(n));
+                }
+                _ => return Err("ERR syntax error".to_string()),
+            }
+        }
+
+        if !iter.remainder().is_empty() {
+            return Err("ERR syntax error".to_string());
+        };
+
+        match exp {
+            Opt::Ex(i) | Opt::Px(i) => Ok(Some(i)),
+            Opt::None => Ok(None),
+        }
+    }
+
+    pub fn execute(self, map: &mut HashMap<String, Entry>) -> Frame {
         match self {
             Command::Ping(arg) => {
                 if let Some(arg) = arg {
@@ -94,12 +165,32 @@ impl Command {
                 }
             }
             Command::Echo(arg) => Frame::BulkString(arg.as_bytes().to_vec()),
-            Command::Set { key, value } => {
-                map.insert(key, value);
+            Command::Set {
+                key,
+                value,
+                expires_at,
+            } => {
+                map.insert(
+                    key,
+                    Entry {
+                        data: value,
+                        expires_at,
+                    },
+                );
+
                 Frame::SimpleString("OK".to_string())
             }
             Command::Get { key } => match map.get(&key) {
-                Some(value) => Frame::BulkString(value.as_bytes().to_vec()),
+                Some(value) => {
+                    if let Some(t) = value.expires_at
+                        && t < Instant::now()
+                    {
+                        map.remove(&key).unwrap();
+                        return Frame::Null;
+                    }
+
+                    Frame::BulkString(value.data.as_bytes().to_vec())
+                }
                 None => Frame::Null,
             },
             Command::Del { keys } => {
@@ -127,7 +218,7 @@ pub fn run() {}
 type CommandRequest = (Command, oneshot::Sender<Frame>);
 
 pub async fn start_server(listener: TcpListener) {
-    let mut map: HashMap<String, String> = HashMap::new();
+    let mut map: HashMap<String, Entry> = HashMap::new();
     let (tx, mut rx) = mpsc::channel::<CommandRequest>(10);
 
     // handle commands
