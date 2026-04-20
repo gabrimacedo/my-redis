@@ -102,19 +102,19 @@ For each type (SimpleString, Error, Integer, BulkString, Null, Array):
 - [x] Green
 
 ### 4d: TTL
-- [ ] Write test: SET key EX 10, TTL returns positive integer
-- [ ] Write test: SET key (no expiry), TTL returns `:-1\r\n`
-- [ ] Write test: TTL nonexistent key returns `:-2\r\n`
-- [ ] Green
+- [x] Write test: SET key EX 10, TTL returns positive integer
+- [x] Write test: SET key (no expiry), TTL returns `:-1\r\n`
+- [x] Write test: TTL nonexistent key returns `:-2\r\n`
+- [x] Green
 
 ### 4e: Lazy expiration
-- [ ] Write test: SET key EX 1, sleep >1s, EXISTS returns `:0\r\n`
-- [ ] Write test: SET key EX 1, sleep >1s, TTL returns `:-2\r\n`
-- [ ] Green
+- [x] Write test: SET key EX 1, sleep >1s, EXISTS returns `:0\r\n`
+- [x] Write test: SET key EX 1, sleep >1s, TTL returns `:-2\r\n`
+- [x] Green
 
 ### 4f: Active expiration
-- [ ] Write test: SET key PX 50, sleep 200ms, key is gone without accessing it first
-- [ ] Green
+- [x] Write test: SET key PX 50, sleep 200ms, key is gone without accessing it first
+- [x] Green
 
 ---
 
