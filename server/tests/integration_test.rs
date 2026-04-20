@@ -442,4 +442,154 @@ mod integration_test {
 
         assert_eq!(resp, expected);
     }
+
+    #[tokio::test]
+    async fn set_key_ex10_ttl_returns_positive_int() {
+        let addr = spawn_server().await;
+        let mut client = connect_to_server(addr).await;
+
+        let set_cmd = Frame::Array(vec![
+            Frame::BulkString(b"SET".to_vec()),
+            Frame::BulkString(b"key".to_vec()),
+            Frame::BulkString(b"val".to_vec()),
+            Frame::BulkString(b"EX".to_vec()),
+            Frame::BulkString(b"10".to_vec()),
+        ])
+        .encode();
+        let ttl_cmd = Frame::Array(vec![
+            Frame::BulkString(b"ttl".to_vec()),
+            Frame::BulkString(b"key".to_vec()),
+        ])
+        .encode();
+        let _ = send_cmd(&mut client, &set_cmd).await;
+        let resp = send_cmd(&mut client, &ttl_cmd).await;
+
+        let Frame::Integer(n) = resp else {
+            panic!("expected integer, got {:?}", resp);
+        };
+
+        assert!(n > 0);
+    }
+
+    #[tokio::test]
+    async fn set_key_noex_ttl_returns_neg1() {
+        let addr = spawn_server().await;
+        let mut client = connect_to_server(addr).await;
+
+        let set_cmd = Frame::Array(vec![
+            Frame::BulkString(b"SET".to_vec()),
+            Frame::BulkString(b"key".to_vec()),
+            Frame::BulkString(b"val".to_vec()),
+        ])
+        .encode();
+        let ttl_cmd = Frame::Array(vec![
+            Frame::BulkString(b"ttl".to_vec()),
+            Frame::BulkString(b"key".to_vec()),
+        ])
+        .encode();
+
+        let expected = Frame::Integer(-1);
+        let _ = send_cmd(&mut client, &set_cmd).await;
+        let resp = send_cmd(&mut client, &ttl_cmd).await;
+
+        assert_eq!(expected, resp)
+    }
+
+    #[tokio::test]
+    async fn ttl_nonexistent_key_returns_neg2() {
+        let addr = spawn_server().await;
+        let mut client = connect_to_server(addr).await;
+
+        let ttl_cmd = Frame::Array(vec![
+            Frame::BulkString(b"ttl".to_vec()),
+            Frame::BulkString(b"key".to_vec()),
+        ])
+        .encode();
+
+        let resp = send_cmd(&mut client, &ttl_cmd).await;
+        let expected = Frame::Integer(-2);
+
+        assert_eq!(expected, resp)
+    }
+
+    #[tokio::test]
+    async fn set_key_ex1_sleep_more_than_1s_exists_returns_0() {
+        let addr = spawn_server().await;
+        let mut client = connect_to_server(addr).await;
+
+        let set_cmd = Frame::Array(vec![
+            Frame::BulkString(b"SET".to_vec()),
+            Frame::BulkString(b"key".to_vec()),
+            Frame::BulkString(b"val".to_vec()),
+            Frame::BulkString(b"EX".to_vec()),
+            Frame::BulkString(b"1".to_vec()),
+        ])
+        .encode();
+        let exists_cmd = Frame::Array(vec![
+            Frame::BulkString(b"EXISTS".to_vec()),
+            Frame::BulkString(b"key".to_vec()),
+        ])
+        .encode();
+
+        let _ = send_cmd(&mut client, &set_cmd).await;
+        sleep(Duration::from_millis(1100)).await;
+        let resp = send_cmd(&mut client, &exists_cmd).await;
+        let expected = Frame::Integer(0);
+
+        assert_eq!(expected, resp)
+    }
+
+    #[tokio::test]
+    async fn set_key_ex1_sleep_more_than_1s_ttl_returns_neg2() {
+        let addr = spawn_server().await;
+        let mut client = connect_to_server(addr).await;
+
+        let set_cmd = Frame::Array(vec![
+            Frame::BulkString(b"SET".to_vec()),
+            Frame::BulkString(b"key".to_vec()),
+            Frame::BulkString(b"val".to_vec()),
+            Frame::BulkString(b"EX".to_vec()),
+            Frame::BulkString(b"1".to_vec()),
+        ])
+        .encode();
+        let ttl_cmd = Frame::Array(vec![
+            Frame::BulkString(b"ttl".to_vec()),
+            Frame::BulkString(b"key".to_vec()),
+        ])
+        .encode();
+
+        let _ = send_cmd(&mut client, &set_cmd).await;
+        sleep(Duration::from_millis(1100)).await;
+        let resp = send_cmd(&mut client, &ttl_cmd).await;
+        let expected = Frame::Integer(-2);
+
+        assert_eq!(expected, resp)
+    }
+
+    #[tokio::test]
+    async fn active_expiration_removes_key_without_access() {
+        let addr = spawn_server().await;
+        let mut client = connect_to_server(addr).await;
+
+        let set_cmd = Frame::Array(vec![
+            Frame::BulkString(b"SET".to_vec()),
+            Frame::BulkString(b"key".to_vec()),
+            Frame::BulkString(b"val".to_vec()),
+            Frame::BulkString(b"PX".to_vec()),
+            Frame::BulkString(b"50".to_vec()),
+        ])
+        .encode();
+        let ttl_cmd = Frame::Array(vec![
+            Frame::BulkString(b"ttl".to_vec()),
+            Frame::BulkString(b"key".to_vec()),
+        ])
+        .encode();
+
+        let _ = send_cmd(&mut client, &set_cmd).await;
+        sleep(Duration::from_millis(1100)).await;
+        let resp = send_cmd(&mut client, &ttl_cmd).await;
+        let expected = Frame::Integer(-2);
+
+        assert_eq!(expected, resp)
+    }
 }

@@ -37,6 +37,7 @@ pub enum Command {
     Exists {
         keys: Vec<String>,
     },
+    Ttl(String),
 }
 
 impl Command {
@@ -77,7 +78,7 @@ impl Command {
                 Ok(Command::Set {
                     key: args[0].clone(),
                     value: args[1].clone(),
-                    expires_at: Command::get_expiry(&args[2..])?,
+                    expires_at: Self::get_expiry(&args[2..])?,
                 })
             }
             "GET" => {
@@ -99,6 +100,12 @@ impl Command {
                     return Err("ERR wrong number of arguments for 'EXISTS' command".to_string());
                 }
                 Ok(Command::Exists { keys: args })
+            }
+            "TTL" => {
+                if args.is_empty() {
+                    return Err("ERR wrong number of arguments for 'EXISTS' command".to_string());
+                }
+                Ok(Command::Ttl(args[0].clone()))
             }
             _ => Err(format!("ERR unknown command '{}'", cmd)),
         }
@@ -204,10 +211,34 @@ impl Command {
                 Frame::Integer(count)
             }
             Command::Exists { keys } => {
-                let count = keys
-                    .iter()
-                    .fold(0, |acc, k| if map.get(k).is_none() { acc } else { acc + 1 });
+                let count = keys.iter().fold(0, |acc, k| {
+                    if map
+                        .get(k)
+                        .is_some_and(|e| e.expires_at.is_none_or(|t| t > Instant::now()))
+                    {
+                        acc + 1
+                    } else {
+                        acc
+                    }
+                });
+
                 Frame::Integer(count)
+            }
+            Command::Ttl(key) => {
+                let Some(value) = map.get(&key) else {
+                    return Frame::Integer(-2);
+                };
+
+                let Some(exp) = value.expires_at else {
+                    return Frame::Integer(-1);
+                };
+
+                // TODO: rafactor lazy expiration check to a fn
+                if Instant::now() > exp {
+                    return Frame::Integer(-2);
+                };
+
+                Frame::Integer((exp - Instant::now()).as_secs() as i64)
             }
         }
     }
@@ -259,5 +290,52 @@ async fn handle_client(mut socket: TcpStream, tx: Sender<CommandRequest>) {
                 let _ = socket.write(&Frame::Error(msg).encode()).await.unwrap();
             }
         };
+    }
+}
+
+pub fn sweep_expired(map: &mut HashMap<String, Entry>) -> usize {
+    let before = map.len();
+    map.retain(|_, entry| entry.expires_at.is_none_or(|t| t > Instant::now()));
+    before - map.len()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::thread::sleep;
+
+    #[test]
+    fn sweep_removes_expired_keys_without_access() {
+        let mut map: HashMap<String, Entry> = HashMap::new();
+
+        map.insert(
+            "expired".to_string(),
+            Entry {
+                data: "val".to_string(),
+                expires_at: Some(Instant::now() + Duration::from_millis(50)),
+            },
+        );
+        map.insert(
+            "alive".to_string(),
+            Entry {
+                data: "val".to_string(),
+                expires_at: Some(Instant::now() + Duration::from_secs(100)),
+            },
+        );
+        map.insert(
+            "no_expiry".to_string(),
+            Entry {
+                data: "val".to_string(),
+                expires_at: None,
+            },
+        );
+
+        sleep(Duration::from_millis(100));
+        let removed = sweep_expired(&mut map);
+
+        assert_eq!(removed, 1);
+        assert!(!map.contains_key("expired"));
+        assert!(map.contains_key("alive"));
+        assert!(map.contains_key("no_expiry"));
     }
 }
