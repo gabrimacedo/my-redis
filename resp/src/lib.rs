@@ -1,4 +1,5 @@
 use std::{
+    error::Error,
     fmt::Display,
     io::{self, BufRead, Read, Result, Write},
 };
@@ -87,7 +88,9 @@ impl Frame {
     pub fn decode(mut bytes: &[u8]) -> (Self, usize) {
         // read first byte, so to "consume" it and move the cursor
         let mut first_byte = [0; 1];
-        let _ = bytes.read_exact(&mut first_byte);
+        if bytes.read_exact(&mut first_byte).is_err() {
+            return (Frame::Incomplete, 0);
+        };
 
         match first_byte[0] {
             b'+' => {
