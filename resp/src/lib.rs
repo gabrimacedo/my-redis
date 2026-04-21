@@ -1,4 +1,7 @@
-use std::io::{self, BufRead, Read, Result, Write};
+use std::{
+    fmt::Display,
+    io::{self, BufRead, Read, Result, Write},
+};
 
 #[derive(PartialEq, Debug, Hash, Eq)]
 pub enum Frame {
@@ -9,6 +12,32 @@ pub enum Frame {
     Null,
     Array(Vec<Frame>),
     Incomplete,
+}
+
+impl Display for Frame {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Frame::Integer(n) => write!(f, "Frame::Integer({})", n),
+            Frame::SimpleString(s) => write!(f, "Frame::SimpleString({})", s),
+            Frame::BulkString(items) => {
+                write!(
+                    f,
+                    "Frame::BulkString({})",
+                    String::from_utf8(items.clone()).unwrap()
+                )
+            }
+            Frame::Error(e) => write!(f, "Frame::Error({})", e),
+            Frame::Null => write!(f, "Frame::Null"),
+            Frame::Array(frames) => {
+                writeln!(f, "Frame::Array [")?;
+                for frame in frames {
+                    writeln!(f, "\t{}", frame)?;
+                }
+                writeln!(f, "]")
+            }
+            Frame::Incomplete => write!(f, "Frame::Incomplete"),
+        }
+    }
 }
 
 impl Frame {
