@@ -117,6 +117,7 @@ impl Frame {
                 let Ok(n) = Self::find_delimiter(&mut bytes, &mut count) else {
                     return (Frame::Incomplete, 0);
                 };
+
                 let count = String::from_utf8(count).unwrap();
                 let count: i64 = count.parse().unwrap();
 
@@ -128,6 +129,11 @@ impl Frame {
                 let mut cursor = 0;
                 for _ in 0..count {
                     let (f, consumed) = Self::decode(&bytes[cursor..]);
+
+                    if matches!(f, Frame::Incomplete) {
+                        return (Frame::Incomplete, 0);
+                    }
+
                     arr.push(f);
                     cursor += consumed;
                 }
