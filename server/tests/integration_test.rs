@@ -29,13 +29,34 @@ async fn send_cmd(conn: &mut TcpStream, cmd: &[u8]) -> Frame {
     frame
 }
 
+async fn send_multiple_cmds(conn: &mut TcpStream, cmds: Vec<Vec<u8>>) -> Vec<Frame> {
+    let bundled_cmds = cmds.into_iter().flatten().collect::<Vec<u8>>();
+    let _ = conn.write(&bundled_cmds).await.unwrap();
+
+    let mut response_frames = Vec::new();
+    let mut resp = [0u8; 1024];
+    let n = conn.read(&mut resp).await.unwrap();
+    let mut offset = 0;
+
+    while offset < n {
+        let (frame, consumed) = Frame::decode(&resp[offset..n]);
+        response_frames.push(frame);
+        offset += consumed;
+    }
+
+    response_frames
+}
+
 mod integration_test {
     use std::time::Duration;
 
     use resp::Frame;
-    use tokio::time::sleep;
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        time::sleep,
+    };
 
-    use crate::{connect_to_server, send_cmd, spawn_server};
+    use crate::{connect_to_server, send_cmd, send_multiple_cmds, spawn_server};
 
     #[tokio::test]
     async fn ping_with_argument_returns_argument() {
@@ -591,5 +612,58 @@ mod integration_test {
         let expected = Frame::Integer(-2);
 
         assert_eq!(expected, resp)
+    }
+
+    #[tokio::test]
+    async fn incomplete_frame_waits_for_more_data() {
+        let addr = spawn_server().await;
+        let mut conn = connect_to_server(addr).await;
+
+        let mut resp = [0u8; 1024];
+        let _ = conn
+            .write(b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n")
+            .await
+            .unwrap();
+        let _ = conn.read(&mut resp).await.unwrap();
+        let _ = conn.write(b"*2\r\n$3\r\nGET\r\n$3\r\nk").await.unwrap();
+        let _ = conn.write(b"ey\r\n").await.unwrap();
+        let n = conn.read(&mut resp).await.unwrap();
+
+        let (frame, _) = Frame::decode(&resp[..n]);
+        let expected = Frame::BulkString(b"value".to_vec());
+
+        assert_eq!(frame, expected);
+    }
+
+    #[tokio::test]
+    async fn send_multiple_cmds_at_once() {
+        let addr = spawn_server().await;
+        let mut client = connect_to_server(addr).await;
+
+        let cmds = vec![
+            Frame::Array(vec![
+                Frame::BulkString(b"SET".to_vec()),
+                Frame::BulkString(b"fruit".to_vec()),
+                Frame::BulkString(b"papaya".to_vec()),
+            ])
+            .encode(),
+            Frame::Array(vec![
+                Frame::BulkString(b"SET".to_vec()),
+                Frame::BulkString(b"fruit".to_vec()),
+                Frame::BulkString(b"banana".to_vec()),
+            ])
+            .encode(),
+            Frame::Array(vec![
+                Frame::BulkString(b"GET".to_vec()),
+                Frame::BulkString(b"fruit".to_vec()),
+            ])
+            .encode(),
+        ];
+
+        let frames = send_multiple_cmds(&mut client, cmds).await;
+
+        assert_eq!(frames[0], Frame::SimpleString("OK".to_string()));
+        assert_eq!(frames[1], Frame::SimpleString("OK".to_string()));
+        assert_eq!(frames[2], Frame::BulkString(b"banana".to_vec()));
     }
 }
