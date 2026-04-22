@@ -79,7 +79,7 @@ impl Command {
                 Ok(Command::Set {
                     key: args[0].clone(),
                     value: args[1].clone(),
-                    expires_at: Self::get_expiry(&args[2..])?,
+                    expires_at: Self::parse_expiry(&args[2..])?,
                 })
             }
             "GET" => {
@@ -112,7 +112,7 @@ impl Command {
         }
     }
 
-    fn get_expiry(opts: &[String]) -> Result<Option<Instant>, String> {
+    fn parse_expiry(opts: &[String]) -> Result<Option<Instant>, String> {
         enum Opt {
             Ex(Instant),
             Px(Instant),
@@ -124,7 +124,7 @@ impl Command {
         for s in iter.by_ref() {
             match s[0].as_str() {
                 "EX" => {
-                    if let Opt::Px(_) = exp {
+                    if matches!(exp, Opt::Px(_)) {
                         return Err(
                             "ERR EX and PX options at the same time are not compatible".to_string()
                         );
@@ -137,7 +137,7 @@ impl Command {
                     exp = Opt::Ex(Instant::now() + Duration::from_secs(n));
                 }
                 "PX" => {
-                    if let Opt::Ex(_) = exp {
+                    if matches!(exp, Opt::Ex(_)) {
                         return Err(
                             "ERR PX and EX options at the same time are not compatible".to_string()
                         );
@@ -167,10 +167,9 @@ impl Command {
         match self {
             Command::Ping(arg) => {
                 if let Some(arg) = arg {
-                    Frame::BulkString(arg.as_bytes().to_vec())
-                } else {
-                    Frame::SimpleString("PONG".to_string())
+                    return Frame::BulkString(arg.as_bytes().to_vec());
                 }
+                Frame::SimpleString("PONG".to_string())
             }
             Command::Echo(arg) => Frame::BulkString(arg.as_bytes().to_vec()),
             Command::Set {
@@ -185,24 +184,17 @@ impl Command {
                         expires_at,
                     },
                 );
-
                 Frame::SimpleString("OK".to_string())
             }
-            Command::Get { key } => match map.get(&key) {
-                Some(value) => {
-                    if let Some(t) = value.expires_at
-                        && t < Instant::now()
-                    {
-                        map.remove(&key).unwrap();
-                        return Frame::Null;
-                    }
-
-                    Frame::BulkString(value.data.as_bytes().to_vec())
-                }
-                None => Frame::Null,
-            },
+            Command::Get { key } => {
+                let Some(value) = Self::get_or_expire(&key, map) else {
+                    return Frame::Null;
+                };
+                Frame::BulkString(value.data.as_bytes().to_vec())
+            }
             Command::Del { keys } => {
                 let count = keys.iter().fold(0, |acc, k| {
+                    let _ = Self::get_or_expire(k, map);
                     if map.remove(k).is_none() {
                         acc
                     } else {
@@ -213,8 +205,7 @@ impl Command {
             }
             Command::Exists { keys } => {
                 let count = keys.iter().fold(0, |acc, k| {
-                    if map
-                        .get(k)
+                    if Self::get_or_expire(k, map)
                         .is_some_and(|e| e.expires_at.is_none_or(|t| t > Instant::now()))
                     {
                         acc + 1
@@ -226,7 +217,7 @@ impl Command {
                 Frame::Integer(count)
             }
             Command::Ttl(key) => {
-                let Some(value) = map.get(&key) else {
+                let Some(value) = Self::get_or_expire(&key, map) else {
                     return Frame::Integer(-2);
                 };
 
@@ -234,14 +225,18 @@ impl Command {
                     return Frame::Integer(-1);
                 };
 
-                // TODO: rafactor lazy expiration check to a fn
-                if Instant::now() > exp {
-                    return Frame::Integer(-2);
-                };
-
                 Frame::Integer((exp - Instant::now()).as_secs() as i64)
             }
         }
+    }
+
+    fn get_or_expire<'a>(key: &str, map: &'a mut HashMap<String, Entry>) -> Option<&'a Entry> {
+        if map.get(key)?.expires_at.is_some_and(|t| t < Instant::now()) {
+            map.remove(key);
+            return None;
+        }
+
+        map.get(key)
     }
 }
 

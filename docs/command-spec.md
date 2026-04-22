@@ -83,7 +83,7 @@ GET key
 
 - Returns the value as a Bulk String.
 - If key does not exist: `$-1\r\n` (Null).
-- If key exists but holds a non-string type (e.g., a list): error.
+- If key exists but holds a non-string type (e.g., a list): error. -CHECK
 
 ```
 > GET mykey
