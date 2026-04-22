@@ -202,3 +202,55 @@ async fn ttl_expired_key_returns_neg2() {
 
     assert_eq!(resp, Frame::Integer(-2))
 }
+
+#[tokio::test]
+async fn ttl_gets_discarded_if_overitten_with_no_expiry() {
+    let addr = spawn_server().await;
+    let mut client = connect_to_server(addr).await;
+    let set_cmd = Frame::Array(vec![
+        Frame::BulkString(b"SET".to_vec()),
+        Frame::BulkString(b"key".to_vec()),
+        Frame::BulkString(b"val".to_vec()),
+        Frame::BulkString(b"EX".to_vec()),
+        Frame::BulkString(b"1".to_vec()),
+    ]);
+    let overwrite_cmd = Frame::Array(vec![
+        Frame::BulkString(b"SET".to_vec()),
+        Frame::BulkString(b"key".to_vec()),
+        Frame::BulkString(b"val".to_vec()),
+    ]);
+    let ttl_cmd = Frame::Array(vec![
+        Frame::BulkString(b"ttl".to_vec()),
+        Frame::BulkString(b"key".to_vec()),
+    ]);
+
+    let _ = send_cmd(&mut client, &set_cmd.encode()).await;
+    let _ = send_cmd(&mut client, &overwrite_cmd.encode()).await;
+    sleep(Duration::from_millis(1300)).await;
+    let resp = send_cmd(&mut client, &ttl_cmd.encode()).await;
+
+    assert_eq!(resp, Frame::Integer(-1))
+}
+
+#[tokio::test]
+async fn delete_expired_key_returns_0() {
+    let addr = spawn_server().await;
+    let mut client = connect_to_server(addr).await;
+    let set_cmd = Frame::Array(vec![
+        Frame::BulkString(b"SET".to_vec()),
+        Frame::BulkString(b"key".to_vec()),
+        Frame::BulkString(b"val".to_vec()),
+        Frame::BulkString(b"EX".to_vec()),
+        Frame::BulkString(b"1".to_vec()),
+    ]);
+    let del_cmd = Frame::Array(vec![
+        Frame::BulkString(b"DEL".to_vec()),
+        Frame::BulkString(b"key".to_vec()),
+    ]);
+
+    let _ = send_cmd(&mut client, &set_cmd.encode()).await;
+    sleep(Duration::from_millis(1300)).await;
+    let resp = send_cmd(&mut client, &del_cmd.encode()).await;
+
+    assert_eq!(resp, Frame::Integer(0))
+}
