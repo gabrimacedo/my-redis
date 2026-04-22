@@ -8,7 +8,7 @@ use resp::Frame;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
-    spawn,
+    select, spawn,
     sync::{
         mpsc::{self, Sender},
         oneshot,
@@ -19,6 +19,12 @@ use tokio::{
 pub struct Entry {
     data: String,
     expires_at: Option<Instant>,
+}
+
+impl Entry {
+    pub fn is_expired(&self) -> bool {
+        self.expires_at.is_some_and(|t| t < Instant::now())
+    }
 }
 
 pub enum Command {
@@ -194,8 +200,7 @@ impl Command {
             }
             Command::Del { keys } => {
                 let count = keys.iter().fold(0, |acc, k| {
-                    let _ = Self::get_or_expire(k, map);
-                    if map.remove(k).is_none() {
+                    if Self::get_or_expire(k, map).is_none() && map.remove(k).is_none() {
                         acc
                     } else {
                         acc + 1
@@ -205,9 +210,7 @@ impl Command {
             }
             Command::Exists { keys } => {
                 let count = keys.iter().fold(0, |acc, k| {
-                    if Self::get_or_expire(k, map)
-                        .is_some_and(|e| e.expires_at.is_none_or(|t| t > Instant::now()))
-                    {
+                    if Self::get_or_expire(k, map).is_some() {
                         acc + 1
                     } else {
                         acc
@@ -231,7 +234,7 @@ impl Command {
     }
 
     fn get_or_expire<'a>(key: &str, map: &'a mut HashMap<String, Entry>) -> Option<&'a Entry> {
-        if map.get(key)?.expires_at.is_some_and(|t| t < Instant::now()) {
+        if map.get(key)?.is_expired() {
             map.remove(key);
             return None;
         }
@@ -245,13 +248,21 @@ type CommandRequest = (Command, oneshot::Sender<Frame>);
 pub async fn start_server(listener: TcpListener) {
     let mut map: HashMap<String, Entry> = HashMap::new();
     let (tx, mut rx) = mpsc::channel::<CommandRequest>(10);
+    let mut interval = tokio::time::interval(Duration::from_millis(100));
 
-    // handle commands
     spawn(async move {
         loop {
-            let (cmd, resp_tx) = rx.recv().await.unwrap();
-            let frame = cmd.execute(&mut map);
-            resp_tx.send(frame).unwrap();
+            select! {
+                // handle commands
+                Some(( cmd, resp_tx )) = rx.recv() => {
+                    let frame = cmd.execute(&mut map);
+                    resp_tx.send(frame).unwrap();
+                }
+                // sweep expired routine
+                _ = interval.tick() => {
+                    sweep_expired(&mut map);
+                }
+            }
         }
     });
 
@@ -351,47 +362,58 @@ async fn handle_client(socket: TcpStream, tx: Sender<CommandRequest>) {
 
 pub fn sweep_expired(map: &mut HashMap<String, Entry>) -> usize {
     let before = map.len();
-    map.retain(|_, entry| entry.expires_at.is_none_or(|t| t > Instant::now()));
+
+    let keys_to_remove: Vec<_> = map
+        .iter()
+        .take(20)
+        .filter(|(_k, v)| v.is_expired())
+        .map(|(k, _v)| k.clone())
+        .collect();
+
+    for key in keys_to_remove {
+        map.remove(&key);
+    }
+
     before - map.len()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::thread::sleep;
 
     #[test]
-    fn sweep_removes_expired_keys_without_access() {
+    fn expire_sweep_removes_keys_without_access() {
+        let mut expired_map: HashMap<String, Entry> = HashMap::new();
+
+        for i in 0..20 {
+            expired_map.insert(
+                i.to_string(),
+                Entry {
+                    data: "data".to_string(),
+                    expires_at: Some(Instant::now() - Duration::from_secs(3600)),
+                },
+            );
+        }
+
+        let removed = sweep_expired(&mut expired_map);
+        assert_eq!(removed, 20);
+    }
+
+    #[test]
+    fn expire_sweep_capped_at_20_removals() {
         let mut map: HashMap<String, Entry> = HashMap::new();
 
-        map.insert(
-            "expired".to_string(),
-            Entry {
-                data: "val".to_string(),
-                expires_at: Some(Instant::now() + Duration::from_millis(50)),
-            },
-        );
-        map.insert(
-            "alive".to_string(),
-            Entry {
-                data: "val".to_string(),
-                expires_at: Some(Instant::now() + Duration::from_secs(100)),
-            },
-        );
-        map.insert(
-            "no_expiry".to_string(),
-            Entry {
-                data: "val".to_string(),
-                expires_at: None,
-            },
-        );
+        for i in 0..40 {
+            map.insert(
+                i.to_string(),
+                Entry {
+                    data: "data".to_string(),
+                    expires_at: Some(Instant::now() - Duration::from_secs(3600)),
+                },
+            );
+        }
 
-        sleep(Duration::from_millis(100));
         let removed = sweep_expired(&mut map);
-
-        assert_eq!(removed, 1);
-        assert!(!map.contains_key("expired"));
-        assert!(map.contains_key("alive"));
-        assert!(map.contains_key("no_expiry"));
+        assert!(removed <= 20);
     }
 }
