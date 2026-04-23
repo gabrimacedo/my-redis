@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     io,
     time::{Duration, Instant},
 };
@@ -15,10 +15,19 @@ use tokio::{
     },
 };
 
+type CommandRequest = (Command, oneshot::Sender<Frame>);
+type Map = HashMap<Vec<u8>, Entry>;
+
 #[derive(Debug)]
 pub struct Entry {
-    data: String,
+    data: DataType,
     expires_at: Option<Instant>,
+}
+
+#[derive(Debug)]
+pub enum DataType {
+    String(Vec<u8>),
+    List(VecDeque<Vec<u8>>),
 }
 
 impl Entry {
@@ -28,23 +37,39 @@ impl Entry {
 }
 
 pub enum Command {
-    Ping(Option<String>),
-    Echo(String),
+    Ping(Option<Vec<u8>>),
+    Echo(Vec<u8>),
     Set {
-        key: String,
-        value: String,
+        key: Vec<u8>,
+        value: Vec<u8>,
         expires_at: Option<Instant>,
     },
     Get {
-        key: String,
+        key: Vec<u8>,
     },
     Del {
-        keys: Vec<String>,
+        keys: Vec<Vec<u8>>,
     },
     Exists {
-        keys: Vec<String>,
+        keys: Vec<Vec<u8>>,
     },
-    Ttl(String),
+    Ttl(Vec<u8>),
+    LPush {
+        key: Vec<u8>,
+        items: Vec<Vec<u8>>,
+    },
+    RPush {
+        key: Vec<u8>,
+        items: Vec<Vec<u8>>,
+    },
+    LPop(Vec<u8>),
+    RPop(Vec<u8>),
+    LRange {
+        key: Vec<u8>,
+        start: usize,
+        stop: usize,
+    },
+    LLen(Vec<u8>),
 }
 
 impl Command {
@@ -53,39 +78,38 @@ impl Command {
             return Err("invalid frame".to_owned());
         };
 
-        let args: Result<Vec<String>, String> = frames
+        let args: Result<Vec<_>, _> = frames
             .into_iter()
             .map(|f| match f {
-                Frame::BulkString(bytes) => {
-                    String::from_utf8(bytes).map_err(|_| "invalid frame".to_owned())
-                }
-                _ => Err("invalid frame".to_owned()),
+                Frame::BulkString(s) => Ok(s),
+                _ => Err("invalid frame"),
             })
             .collect();
+
         let mut args = args?;
-        let cmd = args.remove(0).to_uppercase();
+        let cmd = String::from_utf8(args.remove(0)).unwrap();
 
         match cmd.as_str() {
             "PING" => {
                 if args.is_empty() {
                     return Ok(Command::Ping(None));
                 }
-                Ok(Command::Ping(Some(args[0].clone())))
+                Ok(Command::Ping(Some(args.swap_remove(0))))
             }
             "ECHO" => {
                 if args.is_empty() {
                     return Err("ERR wrong number of arguments for 'ECHO' command".to_string());
                 }
-                Ok(Command::Echo(args[0].clone()))
+                Ok(Command::Echo(args.swap_remove(0)))
             }
             "SET" => {
                 if args.len() < 2 {
                     return Err("ERR wrong number of arguments for 'SET' command".to_string());
                 }
                 Ok(Command::Set {
-                    key: args[0].clone(),
-                    value: args[1].clone(),
-                    expires_at: Self::parse_expiry(&args[2..])?,
+                    key: args.remove(0),
+                    value: args.remove(1),
+                    expires_at: Self::parse_expiry(args)?,
                 })
             }
             "GET" => {
@@ -93,7 +117,7 @@ impl Command {
                     return Err("ERR wrong number of arguments for 'GET' command".to_string());
                 }
                 Ok(Command::Get {
-                    key: args[0].clone(),
+                    key: args.swap_remove(0),
                 })
             }
             "DEL" => {
@@ -110,48 +134,64 @@ impl Command {
             }
             "TTL" => {
                 if args.is_empty() {
-                    return Err("ERR wrong number of arguments for 'EXISTS' command".to_string());
+                    return Err("ERR wrong number of arguments for 'TTL' command".to_string());
                 }
-                Ok(Command::Ttl(args[0].clone()))
+                Ok(Command::Ttl(args.swap_remove(0)))
+            }
+            "LPUSH" => {
+                if args.len() < 2 {
+                    return Err("ERR wrong number of arguments for 'LPUSH' command".to_string());
+                };
+                Ok(Command::LPush {
+                    key: args.remove(0),
+                    items: args[0..].to_vec(),
+                })
+            }
+            "LLEN" => {
+                if args.is_empty() {
+                    return Err("ERR wrong number of arguments for 'LPUSH' command".to_string());
+                };
+                Ok(Command::LLen(args.swap_remove(0)))
             }
             _ => Err(format!("ERR unknown command '{}'", cmd)),
         }
     }
 
-    fn parse_expiry(opts: &[String]) -> Result<Option<Instant>, String> {
+    fn parse_expiry(mut opts: Vec<Vec<u8>>) -> Result<Option<Instant>, String> {
         enum Opt {
             Ex(Instant),
             Px(Instant),
             None,
         }
         let mut exp = Opt::None;
+        opts.iter_mut().for_each(|b| b.make_ascii_uppercase());
         let mut iter = opts.chunks_exact(2);
 
         for s in iter.by_ref() {
-            match s[0].as_str() {
-                "EX" => {
+            match s[0].as_slice() {
+                b"EX" => {
                     if matches!(exp, Opt::Px(_)) {
                         return Err(
                             "ERR EX and PX options at the same time are not compatible".to_string()
                         );
                     }
-                    let n = s[1]
-                        .as_str()
-                        .parse::<u64>()
-                        .map_err(|_| "Err value is not an integer or out of range".to_string())?;
+                    let n = String::from_utf8(s[1].clone())
+                        .map_err(|_| "Err: Invalid UTF-8".to_string())?
+                        .parse()
+                        .map_err(|_| "Err: Not an integer or out of range".to_string())?;
 
                     exp = Opt::Ex(Instant::now() + Duration::from_secs(n));
                 }
-                "PX" => {
+                b"PX" => {
                     if matches!(exp, Opt::Ex(_)) {
                         return Err(
                             "ERR PX and EX options at the same time are not compatible".to_string()
                         );
                     }
-                    let n = s[1]
-                        .as_str()
-                        .parse::<u64>()
-                        .map_err(|_| "Err value is not an integer or out of range".to_string())?;
+                    let n = String::from_utf8(s[1].clone())
+                        .map_err(|_| "Err: Invalid UTF-8".to_string())?
+                        .parse()
+                        .map_err(|_| "Err: Not an integer or out of range".to_string())?;
 
                     exp = Opt::Px(Instant::now() + Duration::from_millis(n));
                 }
@@ -169,15 +209,15 @@ impl Command {
         }
     }
 
-    pub fn execute(self, map: &mut HashMap<String, Entry>) -> Frame {
+    pub fn execute(self, map: &mut Map) -> Frame {
         match self {
             Command::Ping(arg) => {
                 if let Some(arg) = arg {
-                    return Frame::BulkString(arg.as_bytes().to_vec());
+                    return Frame::BulkString(arg);
                 }
                 Frame::SimpleString("PONG".to_string())
             }
-            Command::Echo(arg) => Frame::BulkString(arg.as_bytes().to_vec()),
+            Command::Echo(arg) => Frame::BulkString(arg),
             Command::Set {
                 key,
                 value,
@@ -186,7 +226,7 @@ impl Command {
                 map.insert(
                     key,
                     Entry {
-                        data: value,
+                        data: DataType::String(value),
                         expires_at,
                     },
                 );
@@ -196,7 +236,10 @@ impl Command {
                 let Some(value) = Self::get_or_expire(&key, map) else {
                     return Frame::Null;
                 };
-                Frame::BulkString(value.data.as_bytes().to_vec())
+                let DataType::String(s) = &value.data else {
+                    return Frame::Error("WRONGTYPE error".to_string());
+                };
+                Frame::BulkString(s.clone())
             }
             Command::Del { keys } => {
                 let count = keys.iter().fold(0, |acc, k| {
@@ -230,10 +273,47 @@ impl Command {
 
                 Frame::Integer((exp - Instant::now()).as_secs() as i64)
             }
+            Command::LPush { key, items } => {
+                match map.get_mut(&key) {
+                    Some(value) => {
+                        let DataType::List(list) = &mut value.data else {
+                            return Frame::Error("WRONGTYPE error".to_string());
+                        };
+
+                        items.into_iter().for_each(|item| list.push_back(item));
+                    }
+                    None => {
+                        let len = items.len() as i64;
+                        map.insert(
+                            key,
+                            Entry {
+                                data: DataType::List(VecDeque::from(items)),
+                                expires_at: None,
+                            },
+                        );
+                        return Frame::Integer(len);
+                    }
+                };
+
+                Frame::Integer(0)
+            }
+            Command::RPush { key, items: values } => todo!(),
+            Command::LPop(_) => todo!(),
+            Command::RPop(_) => todo!(),
+            Command::LRange { key, start, stop } => todo!(),
+            Command::LLen(key) => {
+                let Some(value) = Self::get_or_expire(&key, map) else {
+                    return Frame::Integer(0);
+                };
+                let DataType::List(list) = &value.data else {
+                    return Frame::Error("WRONGTYPE error".to_string());
+                };
+                Frame::Integer(list.len() as i64)
+            }
         }
     }
 
-    fn get_or_expire<'a>(key: &str, map: &'a mut HashMap<String, Entry>) -> Option<&'a Entry> {
+    fn get_or_expire<'a>(key: &Vec<u8>, map: &'a mut Map) -> Option<&'a Entry> {
         if map.get(key)?.is_expired() {
             map.remove(key);
             return None;
@@ -243,10 +323,8 @@ impl Command {
     }
 }
 
-type CommandRequest = (Command, oneshot::Sender<Frame>);
-
 pub async fn start_server(listener: TcpListener) {
-    let mut map: HashMap<String, Entry> = HashMap::new();
+    let mut map: Map = HashMap::new();
     let (tx, mut rx) = mpsc::channel::<CommandRequest>(10);
     let mut interval = tokio::time::interval(Duration::from_millis(100));
 
@@ -360,7 +438,7 @@ async fn handle_client(socket: TcpStream, tx: Sender<CommandRequest>) {
     }
 }
 
-pub fn sweep_expired(map: &mut HashMap<String, Entry>) -> usize {
+pub fn sweep_expired(map: &mut Map) -> usize {
     let before = map.len();
 
     let keys_to_remove: Vec<_> = map
@@ -383,13 +461,13 @@ mod tests {
 
     #[test]
     fn expire_sweep_removes_keys_without_access() {
-        let mut expired_map: HashMap<String, Entry> = HashMap::new();
+        let mut expired_map: Map = HashMap::new();
 
         for i in 0..20 {
             expired_map.insert(
-                i.to_string(),
+                i.to_string().into_bytes(),
                 Entry {
-                    data: "data".to_string(),
+                    data: DataType::String(b"data".to_vec()),
                     expires_at: Some(Instant::now() - Duration::from_secs(3600)),
                 },
             );
@@ -401,13 +479,13 @@ mod tests {
 
     #[test]
     fn expire_sweep_capped_at_20_removals() {
-        let mut map: HashMap<String, Entry> = HashMap::new();
+        let mut map: Map = HashMap::new();
 
         for i in 0..40 {
             map.insert(
-                i.to_string(),
+                i.to_string().into_bytes(),
                 Entry {
-                    data: "data".to_string(),
+                    data: DataType::String(b"data".to_vec()),
                     expires_at: Some(Instant::now() - Duration::from_secs(3600)),
                 },
             );
