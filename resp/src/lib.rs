@@ -1,5 +1,4 @@
 use std::{
-    error::Error,
     fmt::Display,
     io::{self, BufRead, Read, Result, Write},
 };
