@@ -87,7 +87,9 @@ impl Command {
             .collect();
 
         let mut args = args?;
-        let cmd = String::from_utf8(args.remove(0)).unwrap();
+        let cmd = String::from_utf8(args.remove(0))
+            .map_err(|_| "ERR invalid command".to_string())?
+            .to_uppercase();
 
         match cmd.as_str() {
             "PING" => {
@@ -108,7 +110,7 @@ impl Command {
                 }
                 Ok(Command::Set {
                     key: args.remove(0),
-                    value: args.remove(1),
+                    value: args.remove(0),
                     expires_at: Self::parse_expiry(args)?,
                 })
             }

@@ -110,7 +110,7 @@ async fn ttl_non_expired_key_returns_positive_int() {
         Frame::BulkString(b"10".to_vec()),
     ]);
     let ttl_cmd = Frame::Array(vec![
-        Frame::BulkString(b"ttl".to_vec()),
+        Frame::BulkString(b"TTL".to_vec()),
         Frame::BulkString(b"key".to_vec()),
     ]);
 
@@ -133,7 +133,7 @@ async fn ttl_key_with_no_expiry_returns_neg1() {
         Frame::BulkString(b"val".to_vec()),
     ]);
     let ttl_cmd = Frame::Array(vec![
-        Frame::BulkString(b"ttl".to_vec()),
+        Frame::BulkString(b"TTL".to_vec()),
         Frame::BulkString(b"key".to_vec()),
     ]);
 
@@ -148,7 +148,7 @@ async fn ttl_nonexistent_key_returns_neg2() {
     let addr = spawn_server().await;
     let mut client = connect_to_server(addr).await;
     let ttl_cmd = Frame::Array(vec![
-        Frame::BulkString(b"ttl".to_vec()),
+        Frame::BulkString(b"TTL".to_vec()),
         Frame::BulkString(b"key".to_vec()),
     ]);
 
@@ -192,7 +192,7 @@ async fn ttl_expired_key_returns_neg2() {
         Frame::BulkString(b"1".to_vec()),
     ]);
     let ttl_cmd = Frame::Array(vec![
-        Frame::BulkString(b"ttl".to_vec()),
+        Frame::BulkString(b"TTL".to_vec()),
         Frame::BulkString(b"key".to_vec()),
     ]);
 
@@ -220,7 +220,7 @@ async fn ttl_gets_discarded_if_overitten_with_no_expiry() {
         Frame::BulkString(b"val".to_vec()),
     ]);
     let ttl_cmd = Frame::Array(vec![
-        Frame::BulkString(b"ttl".to_vec()),
+        Frame::BulkString(b"TTL".to_vec()),
         Frame::BulkString(b"key".to_vec()),
     ]);
 

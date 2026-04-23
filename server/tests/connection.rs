@@ -4,6 +4,17 @@ use resp::Frame;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[tokio::test]
+async fn accept_lower_case_cmds() {
+    let addr = spawn_server().await;
+    let mut conn = connect_to_server(addr).await;
+    let cmd = Frame::Array(vec![Frame::BulkString(b"ping".to_vec())]);
+
+    let resp = send_cmd(&mut conn, &cmd.encode()).await;
+
+    assert_eq!(resp, Frame::SimpleString("PONG".to_string()));
+}
+
+#[tokio::test]
 async fn send_foobar_expect_unknow_cmd_error() {
     let addr = spawn_server().await;
     let mut conn = connect_to_server(addr).await;
