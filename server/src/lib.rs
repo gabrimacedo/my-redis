@@ -1,5 +1,8 @@
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{
+        HashMap, VecDeque,
+        hash_map::{self},
+    },
     io,
     time::{Duration, Instant},
 };
@@ -16,10 +19,60 @@ use tokio::{
 };
 
 type CommandRequest = (Command, oneshot::Sender<Frame>);
-type Map = HashMap<Vec<u8>, Entry>;
+
+pub struct Map {
+    data: HashMap<Vec<u8>, StoredEntry>,
+}
+
+impl Map {
+    fn new() -> Self {
+        Self {
+            data: HashMap::new(),
+        }
+    }
+
+    fn insert(&mut self, key: Vec<u8>, value: StoredEntry) -> Option<StoredEntry> {
+        self.data.insert(key, value)
+    }
+
+    fn entry(&mut self, key: Vec<u8>) -> hash_map::Entry<Vec<u8>, StoredEntry> {
+        self.data.entry(key)
+    }
+
+    fn get_mut(&mut self, key: &Vec<u8>) -> Option<&mut StoredEntry> {
+        self.data.get_mut(key)
+    }
+
+    fn remove(&mut self, key: &Vec<u8>) -> Option<StoredEntry> {
+        self.data.remove(key)
+    }
+
+    fn len(&self) -> usize {
+        self.data.len()
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (&Vec<u8>, &StoredEntry)> {
+        self.data.iter()
+    }
+
+    fn retain(&mut self, f: impl FnMut(&Vec<u8>, &mut StoredEntry) -> bool) {
+        self.data.retain(f);
+    }
+
+    fn get_mut_or_expire(&mut self, key: Vec<u8>) -> Option<&mut StoredEntry> {
+        match self.data.entry(key) {
+            hash_map::Entry::Vacant(_) => None,
+            hash_map::Entry::Occupied(entry) if entry.get().is_expired() => {
+                entry.remove();
+                None
+            }
+            hash_map::Entry::Occupied(entry) => Some(entry.into_mut()),
+        }
+    }
+}
 
 #[derive(Debug)]
-pub struct Entry {
+pub struct StoredEntry {
     data: DataType,
     expires_at: Option<Instant>,
 }
@@ -30,7 +83,7 @@ pub enum DataType {
     List(VecDeque<Vec<u8>>),
 }
 
-impl Entry {
+impl StoredEntry {
     pub fn is_expired(&self) -> bool {
         self.expires_at.is_some_and(|t| t < Instant::now())
     }
@@ -227,7 +280,7 @@ impl Command {
             } => {
                 map.insert(
                     key,
-                    Entry {
+                    StoredEntry {
                         data: DataType::String(value),
                         expires_at,
                     },
@@ -235,7 +288,7 @@ impl Command {
                 Frame::SimpleString("OK".to_string())
             }
             Command::Get { key } => {
-                let Some(value) = Self::get_or_expire(&key, map) else {
+                let Some(value) = map.get_mut_or_expire(key) else {
                     return Frame::Null;
                 };
                 let DataType::String(s) = &value.data else {
@@ -244,18 +297,21 @@ impl Command {
                 Frame::BulkString(s.clone())
             }
             Command::Del { keys } => {
-                let count = keys.iter().fold(0, |acc, k| {
-                    if Self::get_or_expire(k, map).is_none() && map.remove(k).is_none() {
-                        acc
-                    } else {
-                        acc + 1
+                let mut count = 0;
+                for key in keys {
+                    if let hash_map::Entry::Occupied(entry) = map.entry(key) {
+                        let expired = entry.get().is_expired();
+                        entry.remove();
+                        if !expired {
+                            count += 1
+                        };
                     }
-                });
+                }
                 Frame::Integer(count)
             }
             Command::Exists { keys } => {
-                let count = keys.iter().fold(0, |acc, k| {
-                    if Self::get_or_expire(k, map).is_some() {
+                let count = keys.into_iter().fold(0, |acc, k| {
+                    if map.get_mut_or_expire(k).is_some() {
                         acc + 1
                     } else {
                         acc
@@ -265,7 +321,7 @@ impl Command {
                 Frame::Integer(count)
             }
             Command::Ttl(key) => {
-                let Some(value) = Self::get_or_expire(&key, map) else {
+                let Some(value) = map.get_mut_or_expire(key) else {
                     return Frame::Integer(-2);
                 };
 
@@ -288,7 +344,7 @@ impl Command {
                         let len = items.len() as i64;
                         map.insert(
                             key,
-                            Entry {
+                            StoredEntry {
                                 data: DataType::List(VecDeque::from(items)),
                                 expires_at: None,
                             },
@@ -296,15 +352,22 @@ impl Command {
                         return Frame::Integer(len);
                     }
                 };
-
                 Frame::Integer(0)
             }
             Command::RPush { key, items: values } => todo!(),
-            Command::LPop(_) => todo!(),
+            Command::LPop(key) => {
+                let Some(value) = map.get_mut_or_expire(key) else {
+                    return Frame::Integer(0);
+                };
+                let DataType::List(list) = &mut value.data else {
+                    return Frame::Error("WRONGTYPE error".to_string());
+                };
+                Frame::BulkString(list.pop_front().unwrap())
+            }
             Command::RPop(_) => todo!(),
             Command::LRange { key, start, stop } => todo!(),
             Command::LLen(key) => {
-                let Some(value) = Self::get_or_expire(&key, map) else {
+                let Some(value) = map.get_mut_or_expire(key) else {
                     return Frame::Integer(0);
                 };
                 let DataType::List(list) = &value.data else {
@@ -314,19 +377,10 @@ impl Command {
             }
         }
     }
-
-    fn get_or_expire<'a>(key: &Vec<u8>, map: &'a mut Map) -> Option<&'a Entry> {
-        if map.get(key)?.is_expired() {
-            map.remove(key);
-            return None;
-        }
-
-        map.get(key)
-    }
 }
 
 pub async fn start_server(listener: TcpListener) {
-    let mut map: Map = HashMap::new();
+    let mut map = Map::new();
     let (tx, mut rx) = mpsc::channel::<CommandRequest>(10);
     let mut interval = tokio::time::interval(Duration::from_millis(100));
 
@@ -463,12 +517,12 @@ mod tests {
 
     #[test]
     fn expire_sweep_removes_keys_without_access() {
-        let mut expired_map: Map = HashMap::new();
+        let mut expired_map = Map::new();
 
         for i in 0..20 {
             expired_map.insert(
                 i.to_string().into_bytes(),
-                Entry {
+                StoredEntry {
                     data: DataType::String(b"data".to_vec()),
                     expires_at: Some(Instant::now() - Duration::from_secs(3600)),
                 },
@@ -481,12 +535,12 @@ mod tests {
 
     #[test]
     fn expire_sweep_capped_at_20_removals() {
-        let mut map: Map = HashMap::new();
+        let mut map = Map::new();
 
         for i in 0..40 {
             map.insert(
                 i.to_string().into_bytes(),
-                Entry {
+                StoredEntry {
                     data: DataType::String(b"data".to_vec()),
                     expires_at: Some(Instant::now() - Duration::from_secs(3600)),
                 },
