@@ -1,8 +1,5 @@
 use std::{
-    collections::{
-        HashMap, VecDeque,
-        hash_map::{self},
-    },
+    collections::{HashMap, VecDeque, hash_map::Entry},
     io,
     time::{Duration, Instant},
 };
@@ -30,44 +27,56 @@ impl Map {
             data: HashMap::new(),
         }
     }
+    // TODO: add doc string explaning lazy expiration
 
     fn insert(&mut self, key: Vec<u8>, value: StoredEntry) -> Option<StoredEntry> {
         self.data.insert(key, value)
     }
 
-    fn entry(&mut self, key: Vec<u8>) -> hash_map::Entry<Vec<u8>, StoredEntry> {
-        self.data.entry(key)
+    fn contains_key(&mut self, key: &[u8]) -> bool {
+        self.lazy_delete(key);
+        self.data.contains_key(key)
     }
 
-    fn get_mut(&mut self, key: &Vec<u8>) -> Option<&mut StoredEntry> {
+    fn get(&mut self, key: &[u8]) -> Option<&StoredEntry> {
+        self.lazy_delete(key);
+        self.data.get(key)
+    }
+
+    fn get_mut(&mut self, key: &[u8]) -> Option<&mut StoredEntry> {
+        self.lazy_delete(key);
         self.data.get_mut(key)
     }
 
-    fn remove(&mut self, key: &Vec<u8>) -> Option<StoredEntry> {
+    fn remove(&mut self, key: &[u8]) -> Option<StoredEntry> {
+        self.lazy_delete(key);
         self.data.remove(key)
     }
 
-    fn len(&self) -> usize {
-        self.data.len()
-    }
-
-    fn iter(&self) -> impl Iterator<Item = (&Vec<u8>, &StoredEntry)> {
-        self.data.iter()
-    }
-
-    fn retain(&mut self, f: impl FnMut(&Vec<u8>, &mut StoredEntry) -> bool) {
-        self.data.retain(f);
-    }
-
-    fn get_mut_or_expire(&mut self, key: Vec<u8>) -> Option<&mut StoredEntry> {
-        match self.data.entry(key) {
-            hash_map::Entry::Vacant(_) => None,
-            hash_map::Entry::Occupied(entry) if entry.get().is_expired() => {
-                entry.remove();
-                None
-            }
-            hash_map::Entry::Occupied(entry) => Some(entry.into_mut()),
+    fn lazy_delete(&mut self, key: &[u8]) {
+        if let Some(entry) = self.data.get(key)
+            && entry.is_expired()
+        {
+            self.data.remove(key);
         }
+    }
+
+    fn sweep_expired(&mut self) -> usize {
+        let before = self.data.len();
+
+        let keys_to_remove: Vec<_> = self
+            .data
+            .iter()
+            .take(20)
+            .filter(|(_k, v)| v.is_expired())
+            .map(|(k, _v)| k.clone())
+            .collect();
+
+        for key in keys_to_remove {
+            self.data.remove(&key);
+        }
+
+        before - self.data.len()
     }
 }
 
@@ -75,6 +84,15 @@ impl Map {
 pub struct StoredEntry {
     data: DataType,
     expires_at: Option<Instant>,
+}
+
+impl StoredEntry {
+    pub fn new(data: DataType) -> Self {
+        Self {
+            data,
+            expires_at: None,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -119,8 +137,8 @@ pub enum Command {
     RPop(Vec<u8>),
     LRange {
         key: Vec<u8>,
-        start: usize,
-        stop: usize,
+        start: i64,
+        stop: i64,
     },
     LLen(Vec<u8>),
 }
@@ -202,11 +220,50 @@ impl Command {
                     items: args[0..].to_vec(),
                 })
             }
+            "RPUSH" => {
+                if args.len() < 2 {
+                    return Err("ERR wrong number of arguments for 'LPUSH' command".to_string());
+                };
+                Ok(Command::RPush {
+                    key: args.remove(0),
+                    items: args[0..].to_vec(),
+                })
+            }
             "LLEN" => {
                 if args.is_empty() {
                     return Err("ERR wrong number of arguments for 'LPUSH' command".to_string());
                 };
                 Ok(Command::LLen(args.swap_remove(0)))
+            }
+            "LPOP" => {
+                if args.is_empty() {
+                    return Err("ERR wrong number of arguments for 'LPUSH' command".to_string());
+                };
+                Ok(Command::LPop(args.swap_remove(0)))
+            }
+            "RPOP" => {
+                if args.is_empty() {
+                    return Err("ERR wrong number of arguments for 'LPUSH' command".to_string());
+                };
+                Ok(Command::RPop(args.swap_remove(0)))
+            }
+            "LRANGE" => {
+                if args.len() < 3 {
+                    return Err("ERR wrong number of arguments for 'RANGE' command".to_string());
+                };
+                let start =
+                    std::str::from_utf8(args[1].as_slice()).map_err(|_| "Invalid argument")?;
+                let start: i64 = start.parse().map_err(|_| "Invalid argument")?;
+
+                let stop =
+                    std::str::from_utf8(args[2].as_slice()).map_err(|_| "Invalid argument")?;
+                let stop: i64 = stop.parse().map_err(|_| "Invalid argument")?;
+
+                Ok(Command::LRange {
+                    key: args.swap_remove(0),
+                    start,
+                    stop,
+                })
             }
             _ => Err(format!("ERR unknown command '{}'", cmd)),
         }
@@ -288,7 +345,7 @@ impl Command {
                 Frame::SimpleString("OK".to_string())
             }
             Command::Get { key } => {
-                let Some(value) = map.get_mut_or_expire(key) else {
+                let Some(value) = map.get_mut(&key) else {
                     return Frame::Null;
                 };
                 let DataType::String(s) = &value.data else {
@@ -298,30 +355,24 @@ impl Command {
             }
             Command::Del { keys } => {
                 let mut count = 0;
-                for key in keys {
-                    if let hash_map::Entry::Occupied(entry) = map.entry(key) {
-                        let expired = entry.get().is_expired();
-                        entry.remove();
-                        if !expired {
-                            count += 1
-                        };
-                    }
+                for k in keys {
+                    if map.remove(&k).is_some() {
+                        count += 1;
+                    };
                 }
                 Frame::Integer(count)
             }
             Command::Exists { keys } => {
-                let count = keys.into_iter().fold(0, |acc, k| {
-                    if map.get_mut_or_expire(k).is_some() {
-                        acc + 1
-                    } else {
-                        acc
+                let mut count = 0;
+                for k in keys {
+                    if map.contains_key(&k) {
+                        count += 1;
                     }
-                });
-
+                }
                 Frame::Integer(count)
             }
             Command::Ttl(key) => {
-                let Some(value) = map.get_mut_or_expire(key) else {
+                let Some(value) = map.get(&key) else {
                     return Frame::Integer(-2);
                 };
 
@@ -332,42 +383,113 @@ impl Command {
                 Frame::Integer((exp - Instant::now()).as_secs() as i64)
             }
             Command::LPush { key, items } => {
-                match map.get_mut(&key) {
-                    Some(value) => {
-                        let DataType::List(list) = &mut value.data else {
+                map.lazy_delete(&key);
+                match map.data.entry(key) {
+                    Entry::Occupied(mut e) => {
+                        let DataType::List(l) = &mut e.get_mut().data else {
                             return Frame::Error("WRONGTYPE error".to_string());
                         };
-
-                        items.into_iter().for_each(|item| list.push_back(item));
+                        for item in items {
+                            l.push_front(item);
+                        }
+                        Frame::Integer(l.len() as i64)
                     }
-                    None => {
-                        let len = items.len() as i64;
-                        map.insert(
-                            key,
-                            StoredEntry {
-                                data: DataType::List(VecDeque::from(items)),
-                                expires_at: None,
-                            },
-                        );
-                        return Frame::Integer(len);
+                    Entry::Vacant(e) => {
+                        let added = items.len();
+                        let new_list: VecDeque<_> = items.into_iter().rev().collect();
+                        e.insert(StoredEntry::new(DataType::List(new_list)));
+                        Frame::Integer(added as i64)
                     }
-                };
-                Frame::Integer(0)
+                }
             }
-            Command::RPush { key, items: values } => todo!(),
+            Command::RPush { key, items } => {
+                map.lazy_delete(&key);
+                match map.data.entry(key) {
+                    Entry::Occupied(mut e) => {
+                        let DataType::List(l) = &mut e.get_mut().data else {
+                            return Frame::Error("WRONGTYPE error".to_string());
+                        };
+                        for item in items {
+                            l.push_back(item);
+                        }
+                        Frame::Integer(l.len() as i64)
+                    }
+                    Entry::Vacant(e) => {
+                        let added = items.len();
+                        let new_list: VecDeque<_> = items.into_iter().collect();
+                        e.insert(StoredEntry::new(DataType::List(new_list)));
+                        Frame::Integer(added as i64)
+                    }
+                }
+            }
             Command::LPop(key) => {
-                let Some(value) = map.get_mut_or_expire(key) else {
-                    return Frame::Integer(0);
+                let Some(value) = map.get_mut(&key) else {
+                    return Frame::Null;
                 };
                 let DataType::List(list) = &mut value.data else {
                     return Frame::Error("WRONGTYPE error".to_string());
                 };
-                Frame::BulkString(list.pop_front().unwrap())
+                let element = list.pop_front().unwrap();
+                if list.is_empty() {
+                    map.remove(&key);
+                }
+                Frame::BulkString(element)
             }
-            Command::RPop(_) => todo!(),
-            Command::LRange { key, start, stop } => todo!(),
+            Command::RPop(key) => {
+                let Some(value) = map.get_mut(&key) else {
+                    return Frame::Null;
+                };
+                let DataType::List(list) = &mut value.data else {
+                    return Frame::Error("WRONGTYPE error".to_string());
+                };
+                let element = list.pop_back().unwrap();
+                if list.is_empty() {
+                    map.remove(&key);
+                }
+                Frame::BulkString(element)
+            }
+            Command::LRange {
+                key,
+                mut start,
+                mut stop,
+            } => {
+                let Some(value) = map.get_mut(&key) else {
+                    return Frame::Array(vec![]);
+                };
+                let DataType::List(list) = &mut value.data else {
+                    return Frame::Error("WRONGTYPE error".to_string());
+                };
+
+                let list_len = list.len() as i64;
+
+                // resolve negative indices
+                if start.is_negative() {
+                    start += list_len;
+                }
+                if stop.is_negative() {
+                    stop += list_len;
+                }
+
+                if start > stop || start > list_len - 1 {
+                    return Frame::Array(vec![]);
+                }
+
+                stop = stop.clamp(stop, list_len - 1);
+
+                println!("start = {:?}", start);
+                println!("stop = {:?}", stop);
+
+                let mut resp = vec![];
+                for i in start..=stop {
+                    // at this point we know range is valid, so we can unwrap
+                    let item = list.get(i as usize).unwrap();
+                    resp.push(Frame::BulkString(item.clone()));
+                }
+
+                Frame::Array(resp)
+            }
             Command::LLen(key) => {
-                let Some(value) = map.get_mut_or_expire(key) else {
+                let Some(value) = map.get(&key) else {
                     return Frame::Integer(0);
                 };
                 let DataType::List(list) = &value.data else {
@@ -394,7 +516,7 @@ pub async fn start_server(listener: TcpListener) {
                 }
                 // sweep expired routine
                 _ = interval.tick() => {
-                    sweep_expired(&mut map);
+                    map.sweep_expired();
                 }
             }
         }
@@ -494,23 +616,6 @@ async fn handle_client(socket: TcpStream, tx: Sender<CommandRequest>) {
     }
 }
 
-pub fn sweep_expired(map: &mut Map) -> usize {
-    let before = map.len();
-
-    let keys_to_remove: Vec<_> = map
-        .iter()
-        .take(20)
-        .filter(|(_k, v)| v.is_expired())
-        .map(|(k, _v)| k.clone())
-        .collect();
-
-    for key in keys_to_remove {
-        map.remove(&key);
-    }
-
-    before - map.len()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -529,7 +634,7 @@ mod tests {
             );
         }
 
-        let removed = sweep_expired(&mut expired_map);
+        let removed = expired_map.sweep_expired();
         assert_eq!(removed, 20);
     }
 
@@ -547,7 +652,7 @@ mod tests {
             );
         }
 
-        let removed = sweep_expired(&mut map);
+        let removed = map.sweep_expired();
         assert!(removed <= 20);
     }
 }
