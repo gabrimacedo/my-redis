@@ -121,37 +121,37 @@ For each type (SimpleString, Error, Integer, BulkString, Null, Array):
 ## Step 5: Lists
 
 ### 5a: LPUSH / RPUSH
-- [ ] Write test: LPUSH mylist "a", expect `:1\r\n`
-- [ ] Write test: LPUSH mylist "b", expect `:2\r\n`
-- [ ] Write test: RPUSH mylist "c", expect `:3\r\n`
-- [ ] Write test: LPUSH on a string key, expect WRONGTYPE error
-- [ ] Green
+- [x] Write test: LPUSH mylist "a", expect `:1\r\n`
+- [x] Write test: LPUSH mylist "b", expect `:2\r\n`
+- [x] Write test: RPUSH mylist "c", expect `:3\r\n`
+- [x] Write test: LPUSH on a string key, expect WRONGTYPE error
+- [x] Green
 
 ### 5b: LPOP / RPOP
-- [ ] Write test: RPUSH "a" "b" "c", LPOP returns "a"
-- [ ] Write test: RPOP returns "c"
-- [ ] Write test: pop until empty, key disappears (GET returns Null, not WRONGTYPE)
-- [ ] Write test: LPOP nonexistent key returns Null
-- [ ] Green
+- [x] Write test: RPUSH "a" "b" "c", LPOP returns "a"
+- [x] Write test: RPOP returns "c"
+- [x] Write test: pop until empty, key disappears (GET returns Null, not WRONGTYPE)
+- [x] Write test: LPOP nonexistent key returns Null
+- [x] Green
 
 ### 5c: LRANGE
-- [ ] Write test: RPUSH "a" "b" "c" "d", LRANGE 0 -1 returns all four
-- [ ] Write test: LRANGE 1 2 returns "b" "c"
-- [ ] Write test: LRANGE 5 10 returns empty array
-- [ ] Write test: LRANGE on nonexistent key returns empty array
-- [ ] Write test: LRANGE on string key returns WRONGTYPE
-- [ ] Green
+- [x] Write test: RPUSH "a" "b" "c" "d", LRANGE 0 -1 returns all four
+- [x] Write test: LRANGE 1 2 returns "b" "c"
+- [x] Write test: LRANGE 5 10 returns empty array
+- [x] Write test: LRANGE on nonexistent key returns empty array
+- [x] Write test: LRANGE on string key returns WRONGTYPE
+- [x] Green
 
 ### 5d: LLEN
-- [ ] Write test: RPUSH 3 items, LLEN returns `:3\r\n`
-- [ ] Write test: LLEN nonexistent returns `:0\r\n`
-- [ ] Write test: LLEN on string key returns WRONGTYPE
-- [ ] Green
+- [x] Write test: RPUSH 3 items, LLEN returns `:3\r\n`
+- [x] Write test: LLEN nonexistent returns `:0\r\n`
+- [x] Write test: LLEN on string key returns WRONGTYPE
+- [x] Green
 
 ### 5e: WRONGTYPE for existing commands
-- [ ] Write test: LPUSH key, then GET key returns WRONGTYPE
-- [ ] Write test: SET key, then LPUSH key returns WRONGTYPE
-- [ ] Green
+- [x] Write test: LPUSH key, then GET key returns WRONGTYPE
+- [x] Write test: SET key, then LPUSH key returns WRONGTYPE
+- [x] Green
 
 ---
 
