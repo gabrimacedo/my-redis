@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, VecDeque, hash_map::Entry},
-    io,
+    io::{self},
     time::{Duration, Instant},
 };
 
@@ -10,12 +10,11 @@ use tokio::{
     net::{TcpListener, TcpStream},
     select, spawn,
     sync::{
+        broadcast,
         mpsc::{self, Sender},
         oneshot,
     },
 };
-
-type CommandRequest = (Command, oneshot::Sender<Frame>);
 
 pub struct Map {
     data: HashMap<Vec<u8>, StoredEntry>,
@@ -107,7 +106,13 @@ impl StoredEntry {
     }
 }
 
+#[derive(Debug)]
 pub enum Command {
+    Subscribe(Vec<Vec<u8>>),
+    Publish {
+        channel: Vec<u8>,
+        message: Vec<u8>,
+    },
     Ping(Option<Vec<u8>>),
     Echo(Vec<u8>),
     Set {
@@ -263,6 +268,21 @@ impl Command {
                     key: args.swap_remove(0),
                     start,
                     stop,
+                })
+            }
+            "SUBSCRIBE" => {
+                if args.is_empty() {
+                    return Err("ERR wrong number of arguments for 'RANGE' command".to_string());
+                };
+                Ok(Command::Subscribe(args))
+            }
+            "PUBLISH" => {
+                if args.len() < 2 {
+                    return Err("ERR wrong number of arguments for 'RANGE' command".to_string());
+                };
+                Ok(Command::Publish {
+                    channel: args.remove(0),
+                    message: args.remove(0),
                 })
             }
             _ => Err(format!("ERR unknown command '{}'", cmd)),
@@ -476,9 +496,6 @@ impl Command {
 
                 stop = stop.clamp(stop, list_len - 1);
 
-                println!("start = {:?}", start);
-                println!("stop = {:?}", stop);
-
                 let mut resp = vec![];
                 for i in start..=stop {
                     // at this point we know range is valid, so we can unwrap
@@ -497,12 +514,28 @@ impl Command {
                 };
                 Frame::Integer(list.len() as i64)
             }
+            Command::Subscribe(_)
+            | Command::Publish {
+                channel: _,
+                message: _,
+            } => unreachable!(),
         }
     }
 }
 
+type CommandRequest = (Command, oneshot::Sender<Response>);
+type ChannelMap = HashMap<Vec<u8>, broadcast::Sender<Frame>>;
+
+#[derive(Debug)]
+enum Response {
+    Single(Frame),
+    Multiple(Vec<(Vec<u8>, broadcast::Receiver<Frame>)>),
+}
+
 pub async fn start_server(listener: TcpListener) {
-    let mut map = Map::new();
+    let mut store_map = Map::new();
+    let mut channel_map: ChannelMap = HashMap::new();
+
     let (tx, mut rx) = mpsc::channel::<CommandRequest>(10);
     let mut interval = tokio::time::interval(Duration::from_millis(100));
 
@@ -511,12 +544,31 @@ pub async fn start_server(listener: TcpListener) {
             select! {
                 // handle commands
                 Some(( cmd, resp_tx )) = rx.recv() => {
-                    let frame = cmd.execute(&mut map);
-                    resp_tx.send(frame).unwrap();
+                    let resp: Response = match cmd {
+                        Command::Subscribe(channels) => {
+                            let receivers: Vec<_> = channels.into_iter().map(|ch| {
+                                let sender = channel_map.entry(ch.clone()).or_insert_with(|| broadcast::channel(16).0);
+                                ( ch, sender.subscribe() )
+                            }).collect();
+
+                            Response::Multiple(receivers)
+                        }
+                        Command::Publish{channel: ch, message: msg} => {
+                            let Some(sender) = channel_map.get(&ch) else {
+                                return Response::Single(Frame::Integer(0));
+                            };
+                            let count = sender.send(Frame::BulkString(msg)).unwrap_or(0);
+                            Response::Single(Frame::Integer(count as i64))
+                        }
+                        other => {
+                            Response::Single(other.execute(&mut store_map))
+                        }
+                    };
+                    resp_tx.send(resp).unwrap();
                 }
                 // sweep expired routine
                 _ = interval.tick() => {
-                    map.sweep_expired();
+                    store_map.sweep_expired();
                 }
             }
         }
@@ -579,35 +631,96 @@ impl Connection {
         }
     }
 
-    async fn write_frame(&mut self, frame: &Frame) -> io::Result<usize> {
-        self.stream.write(&frame.encode()).await
+    async fn write_frames(&mut self, frames: &[Frame]) -> io::Result<usize> {
+        let mut response_buffer = Vec::new();
+        for f in frames {
+            response_buffer.extend(f.encode());
+        }
+        self.stream.write(&response_buffer).await
     }
 }
 
 async fn handle_client(socket: TcpStream, tx: Sender<CommandRequest>) {
     let mut conn = Connection::new(socket);
+    let mut subscriptions: Vec<Vec<u8>> = vec![];
+    let (sub_tx, mut sub_rx) = mpsc::channel::<(Vec<u8>, Frame)>(32);
 
     loop {
-        let frame = match conn.read_frame().await {
-            Ok(frame) => frame,
-            Err(e) => {
-                eprint!("client error: {e}");
+        let frame = select! {
+            // read frame from socket
+            res =  conn.read_frame() => {
+                match res {
+                    Ok(frame) => frame,
+                    Err(e) => {
+                        eprint!("client error: {e}");
+                        return;
+                    }
+                }
+            }
+            // read from sub channels
+            Some((ch_name, msg_frame)) = sub_rx.recv() => {
+                let frame = Frame::Array(vec![
+                    Frame::BulkString(b"message".to_vec()),
+                    Frame::BulkString(ch_name),
+                    msg_frame,
+                ]);
+
+                if let Err(err) = conn.write_frames(&[frame]).await {
+                    eprint!("client error {err}");
+                }
                 return;
             }
         };
 
         match Command::parse(frame) {
             Ok(cmd) => {
+                // send cmd to store task
                 let (resp_tx, resp_rx) = oneshot::channel();
                 tx.send((cmd, resp_tx)).await.unwrap();
-                let out_frame = resp_rx.await.unwrap();
-                if let Err(err) = conn.write_frame(&out_frame).await {
-                    eprint!("client error {err}");
-                    return;
-                }
+
+                // handle store response
+                match resp_rx.await.unwrap() {
+                    // write to client
+                    Response::Single(frame) => {
+                        if let Err(err) = conn.write_frames(&[frame]).await {
+                            eprint!("client error {err}");
+                            return;
+                        }
+                    }
+                    // add receivers to list, than write to client
+                    Response::Multiple(receivers) => {
+                        let frames: Vec<_> = receivers
+                            .into_iter()
+                            .map(|(ch_name, mut rx)| {
+                                let tx = sub_tx.clone();
+                                let ch_for_task = ch_name.clone();
+
+                                // imediatelly spawn receiver handler
+                                spawn(async move {
+                                    while let Ok(frame) = rx.recv().await {
+                                        let _ = tx.send((ch_for_task.clone(), frame)).await;
+                                    }
+                                });
+
+                                subscriptions.push(ch_name.clone());
+                                Frame::Array(vec![
+                                    Frame::BulkString(b"subscribe".to_vec()),
+                                    Frame::BulkString(ch_name),
+                                    Frame::Integer(subscriptions.len() as i64),
+                                ])
+                            })
+                            .collect();
+                        // write to client
+                        if let Err(err) = conn.write_frames(&frames).await {
+                            eprint!("client error {err}");
+                            return;
+                        }
+                    }
+                };
             }
             Err(msg) => {
-                if let Err(err) = conn.write_frame(&Frame::Error(msg)).await {
+                // write to client
+                if let Err(err) = conn.write_frames(&[Frame::Error(msg)]).await {
                     eprintln!("client error {err}");
                     return;
                 }
