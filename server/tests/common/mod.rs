@@ -29,6 +29,14 @@ pub async fn send_cmd(conn: &mut TcpStream, cmd: &[u8]) -> Frame {
     frame
 }
 
+pub async fn get_response(conn: &mut TcpStream) -> Frame {
+    let mut resp = [0u8; 1024];
+    let n = conn.read(&mut resp).await.unwrap();
+
+    let (frame, _) = Frame::decode(&resp[..n]);
+    frame
+}
+
 pub async fn send_multiple_cmds(conn: &mut TcpStream, cmds: Vec<Vec<u8>>) -> Vec<Frame> {
     let bundled_cmds = cmds.into_iter().flatten().collect::<Vec<u8>>();
     let _ = conn.write(&bundled_cmds).await.unwrap();
