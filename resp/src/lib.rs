@@ -3,7 +3,7 @@ use std::{
     io::{self, BufRead, Read, Result, Write},
 };
 
-#[derive(PartialEq, Debug, Hash, Eq)]
+#[derive(PartialEq, Debug, Hash, Eq, Clone)]
 pub enum Frame {
     Integer(i64),
     SimpleString(String),
