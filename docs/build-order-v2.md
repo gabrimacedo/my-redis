@@ -158,10 +158,10 @@ For each type (SimpleString, Error, Integer, BulkString, Null, Array):
 ## Step 6: Pub/Sub
 
 ### 6a: SUBSCRIBE + PUBLISH
-- [ ] Write test: client A subscribes to "ch1", expect subscribe confirmation
-- [ ] Write test: client B publishes "hello" to "ch1", expect client A receives message
-- [ ] Write test: PUBLISH returns count of receivers
-- [ ] Green
+- [x] Write test: client A subscribes to "ch1", expect subscribe confirmation
+- [x] Write test: client B publishes "hello" to "ch1", expect client A receives message
+- [x] Write test: PUBLISH returns count of receivers
+- [x] Green
 
 ### 6b: UNSUBSCRIBE
 - [ ] Write test: subscribe to "ch1" and "ch2", unsubscribe from "ch1",
