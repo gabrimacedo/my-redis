@@ -1,20 +1,19 @@
-use std::collections::VecDeque;
-use std::{collections::hash_map::Entry, time::Duration};
+use std::time::Duration;
 
-use crate::{
-    Frame,
-    store::{DataType, StoreMap, StoredEntry},
-};
+use resp::Frame;
 use tokio::time::Instant;
 
+/// Top-level parsed command. Wraps either a store command or a pubsub command
+/// so the handler can route to the right actor without ever seeing an
+/// "impossible" variant in the inner match.
 #[derive(Debug, Clone)]
 pub enum Command {
-    Subscribe(Vec<Vec<u8>>),
-    Unsubscribe(Option<Vec<Vec<u8>>>),
-    Publish {
-        channel: Vec<u8>,
-        message: Vec<u8>,
-    },
+    Store(StoreCommand),
+    PubSub(PubSubCommand),
+}
+
+#[derive(Debug, Clone)]
+pub enum StoreCommand {
     Ping(Option<Vec<u8>>),
     Echo(Vec<u8>),
     Set {
@@ -50,6 +49,13 @@ pub enum Command {
     LLen(Vec<u8>),
 }
 
+#[derive(Debug, Clone)]
+pub enum PubSubCommand {
+    Subscribe(Vec<Vec<u8>>),
+    Unsubscribe(Option<Vec<Vec<u8>>>),
+    Publish { channel: Vec<u8>, message: Vec<u8> },
+}
+
 impl Command {
     pub fn parse(f: Frame) -> Result<Command, String> {
         let Frame::Array(frames) = f else {
@@ -72,87 +78,89 @@ impl Command {
         match cmd.as_str() {
             "PING" => {
                 if args.is_empty() {
-                    return Ok(Command::Ping(None));
+                    return Ok(Command::Store(StoreCommand::Ping(None)));
                 }
-                Ok(Command::Ping(Some(args.swap_remove(0))))
+                Ok(Command::Store(StoreCommand::Ping(Some(
+                    args.swap_remove(0),
+                ))))
             }
             "ECHO" => {
                 if args.is_empty() {
                     return Err("ERR wrong number of arguments for 'ECHO' command".to_string());
                 }
-                Ok(Command::Echo(args.swap_remove(0)))
+                Ok(Command::Store(StoreCommand::Echo(args.swap_remove(0))))
             }
             "SET" => {
                 if args.len() < 2 {
                     return Err("ERR wrong number of arguments for 'SET' command".to_string());
                 }
-                Ok(Command::Set {
+                Ok(Command::Store(StoreCommand::Set {
                     key: args.remove(0),
                     value: args.remove(0),
                     expires_at: Self::parse_expiry(args)?,
-                })
+                }))
             }
             "GET" => {
                 if args.is_empty() {
                     return Err("ERR wrong number of arguments for 'GET' command".to_string());
                 }
-                Ok(Command::Get {
+                Ok(Command::Store(StoreCommand::Get {
                     key: args.swap_remove(0),
-                })
+                }))
             }
             "DEL" => {
                 if args.is_empty() {
                     return Err("ERR wrong number of arguments for 'DEL' command".to_string());
                 }
-                Ok(Command::Del { keys: args })
+                Ok(Command::Store(StoreCommand::Del { keys: args }))
             }
             "EXISTS" => {
                 if args.is_empty() {
                     return Err("ERR wrong number of arguments for 'EXISTS' command".to_string());
                 }
-                Ok(Command::Exists { keys: args })
+                Ok(Command::Store(StoreCommand::Exists { keys: args }))
             }
             "TTL" => {
                 if args.is_empty() {
                     return Err("ERR wrong number of arguments for 'TTL' command".to_string());
                 }
-                Ok(Command::Ttl(args.swap_remove(0)))
+                Ok(Command::Store(StoreCommand::Ttl(args.swap_remove(0))))
             }
             "LPUSH" => {
                 if args.len() < 2 {
                     return Err("ERR wrong number of arguments for 'LPUSH' command".to_string());
                 };
-                Ok(Command::LPush {
+                Ok(Command::Store(StoreCommand::LPush {
                     key: args.remove(0),
                     items: args[0..].to_vec(),
-                })
+                }))
             }
             "RPUSH" => {
                 if args.len() < 2 {
                     return Err("ERR wrong number of arguments for 'RPUSH' command".to_string());
                 };
-                Ok(Command::RPush {
+                Ok(Command::Store(StoreCommand::RPush {
                     key: args.remove(0),
                     items: args[0..].to_vec(),
-                })
+                }))
             }
             "LLEN" => {
                 if args.is_empty() {
                     return Err("ERR wrong number of arguments for 'LLEN' command".to_string());
                 };
-                Ok(Command::LLen(args.swap_remove(0)))
+                Ok(Command::Store(StoreCommand::LLen(args.swap_remove(0))))
             }
             "LPOP" => {
                 if args.is_empty() {
                     return Err("ERR wrong number of arguments for 'LPOP' command".to_string());
                 };
-                Ok(Command::LPop(args.swap_remove(0)))
+                Ok(Command::Store(StoreCommand::LPop(args.swap_remove(0))))
             }
             "RPOP" => {
                 if args.is_empty() {
                     return Err("ERR wrong number of arguments for 'RPOP' command".to_string());
                 };
-                Ok(Command::RPop(args.swap_remove(0)))
+                Ok(Command::Store(StoreCommand::RPop(args.swap_remove(0))))
             }
             "LRANGE" => {
                 if args.len() < 3 {
@@ -166,32 +174,32 @@ impl Command {
                     std::str::from_utf8(args[2].as_slice()).map_err(|_| "Invalid argument")?;
                 let stop: i64 = stop.parse().map_err(|_| "Invalid argument")?;
 
-                Ok(Command::LRange {
+                Ok(Command::Store(StoreCommand::LRange {
                     key: args.swap_remove(0),
                     start,
                     stop,
-                })
+                }))
             }
             "SUBSCRIBE" => {
                 if args.is_empty() {
                     return Err("ERR wrong number of arguments for 'SUBSCRIBE' command".to_string());
                 };
-                Ok(Command::Subscribe(args))
+                Ok(Command::PubSub(PubSubCommand::Subscribe(args)))
             }
             "UNSUBSCRIBE" => {
                 if args.is_empty() {
-                    return Ok(Command::Unsubscribe(None));
+                    return Ok(Command::PubSub(PubSubCommand::Unsubscribe(None)));
                 };
-                Ok(Command::Unsubscribe(Some(args)))
+                Ok(Command::PubSub(PubSubCommand::Unsubscribe(Some(args))))
             }
             "PUBLISH" => {
                 if args.len() < 2 {
                     return Err("ERR wrong number of arguments for 'PUBLISH' command".to_string());
                 };
-                Ok(Command::Publish {
+                Ok(Command::PubSub(PubSubCommand::Publish {
                     channel: args.remove(0),
                     message: args.remove(0),
-                })
+                }))
             }
             _ => Err(format!("ERR unknown command '{}'", cmd)),
         }
@@ -246,191 +254,6 @@ impl Command {
         match exp {
             Opt::Ex(i) | Opt::Px(i) => Ok(Some(i)),
             Opt::None => Ok(None),
-        }
-    }
-
-    pub fn execute(self, map: &mut StoreMap) -> Frame {
-        match self {
-            Command::Ping(arg) => {
-                if let Some(arg) = arg {
-                    return Frame::BulkString(arg);
-                }
-                Frame::SimpleString("PONG".to_string())
-            }
-            Command::Echo(arg) => Frame::BulkString(arg),
-            Command::Set {
-                key,
-                value,
-                expires_at,
-            } => {
-                map.insert(
-                    key,
-                    StoredEntry {
-                        data: DataType::String(value),
-                        expires_at,
-                    },
-                );
-                Frame::SimpleString("OK".to_string())
-            }
-            Command::Get { key } => {
-                let Some(value) = map.get_mut(&key) else {
-                    return Frame::Null;
-                };
-                let DataType::String(s) = &value.data else {
-                    return Frame::Error("WRONGTYPE error".to_string());
-                };
-                Frame::BulkString(s.clone())
-            }
-            Command::Del { keys } => {
-                let mut count = 0;
-                for k in keys {
-                    if map.remove(&k).is_some() {
-                        count += 1;
-                    };
-                }
-                Frame::Integer(count)
-            }
-            Command::Exists { keys } => {
-                let mut count = 0;
-                for k in keys {
-                    if map.contains_key(&k) {
-                        count += 1;
-                    }
-                }
-                Frame::Integer(count)
-            }
-            Command::Ttl(key) => {
-                let Some(value) = map.get(&key) else {
-                    return Frame::Integer(-2);
-                };
-
-                let Some(exp) = value.expires_at else {
-                    return Frame::Integer(-1);
-                };
-
-                Frame::Integer((exp - Instant::now()).as_secs() as i64)
-            }
-            Command::LPush { key, items } => {
-                map.lazy_delete(&key);
-                match map.data.entry(key) {
-                    Entry::Occupied(mut e) => {
-                        let DataType::List(l) = &mut e.get_mut().data else {
-                            return Frame::Error("WRONGTYPE error".to_string());
-                        };
-                        for item in items {
-                            l.push_front(item);
-                        }
-                        Frame::Integer(l.len() as i64)
-                    }
-                    Entry::Vacant(e) => {
-                        let added = items.len();
-                        let new_list: VecDeque<_> = items.into_iter().rev().collect();
-                        e.insert(StoredEntry::new(DataType::List(new_list)));
-                        Frame::Integer(added as i64)
-                    }
-                }
-            }
-            Command::RPush { key, items } => {
-                map.lazy_delete(&key);
-                match map.data.entry(key) {
-                    Entry::Occupied(mut e) => {
-                        let DataType::List(l) = &mut e.get_mut().data else {
-                            return Frame::Error("WRONGTYPE error".to_string());
-                        };
-                        for item in items {
-                            l.push_back(item);
-                        }
-                        Frame::Integer(l.len() as i64)
-                    }
-                    Entry::Vacant(e) => {
-                        let added = items.len();
-                        let new_list: VecDeque<_> = items.into_iter().collect();
-                        e.insert(StoredEntry::new(DataType::List(new_list)));
-                        Frame::Integer(added as i64)
-                    }
-                }
-            }
-            Command::LPop(key) => {
-                let Some(value) = map.get_mut(&key) else {
-                    return Frame::Null;
-                };
-                let DataType::List(list) = &mut value.data else {
-                    return Frame::Error("WRONGTYPE error".to_string());
-                };
-                let element = list.pop_front().unwrap();
-                if list.is_empty() {
-                    map.remove(&key);
-                }
-                Frame::BulkString(element)
-            }
-            Command::RPop(key) => {
-                let Some(value) = map.get_mut(&key) else {
-                    return Frame::Null;
-                };
-                let DataType::List(list) = &mut value.data else {
-                    return Frame::Error("WRONGTYPE error".to_string());
-                };
-                let element = list.pop_back().unwrap();
-                if list.is_empty() {
-                    map.remove(&key);
-                }
-                Frame::BulkString(element)
-            }
-            Command::LRange {
-                key,
-                mut start,
-                mut stop,
-            } => {
-                let Some(value) = map.get_mut(&key) else {
-                    return Frame::Array(vec![]);
-                };
-                let DataType::List(list) = &mut value.data else {
-                    return Frame::Error("WRONGTYPE error".to_string());
-                };
-
-                let list_len = list.len() as i64;
-
-                // resolve negative indices
-                if start.is_negative() {
-                    start += list_len;
-                }
-                if stop.is_negative() {
-                    stop += list_len;
-                }
-
-                if start > stop || start > list_len - 1 {
-                    return Frame::Array(vec![]);
-                }
-
-                stop = stop.clamp(stop, list_len - 1);
-
-                let mut resp = vec![];
-                for i in start..=stop {
-                    // at this point we know range is valid, so we can unwrap
-                    let item = list.get(i as usize).unwrap();
-                    resp.push(Frame::BulkString(item.clone()));
-                }
-
-                Frame::Array(resp)
-            }
-            Command::LLen(key) => {
-                let Some(value) = map.get(&key) else {
-                    return Frame::Integer(0);
-                };
-                let DataType::List(list) = &value.data else {
-                    return Frame::Error("WRONGTYPE error".to_string());
-                };
-                Frame::Integer(list.len() as i64)
-            }
-
-            // sub/pub commands are handled in the task store
-            // before we even get here
-            Command::Subscribe(_)
-            | Command::Unsubscribe(_)
-            | Command::Publish {
-                channel: _,
-                message: _,
-            } => unreachable!(),
         }
     }
 }
