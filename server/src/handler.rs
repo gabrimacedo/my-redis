@@ -114,24 +114,23 @@ pub async fn handle_client(
                     None => subs.keys().cloned().collect(),
                 };
 
+                let mut frames = Vec::new();
                 // abort viewer tasks and remove from local sub map
                 for ch in &to_unsub {
                     if let Some(handle) = subs.remove(ch) {
                         handle.abort();
                     }
-                }
 
-                // tell pubsub actor to remove broadcast channels that now have no receivers
-                pubsub.cleanup_channels(to_unsub.clone()).await;
-
-                let mut frames = Vec::new();
-                for ch in &to_unsub {
+                    // append response
                     frames.push(Frame::Array(vec![
                         Frame::BulkString(b"unsubscribe".to_vec()),
                         Frame::BulkString(ch.clone()),
                         Frame::Integer(subs.len() as i64),
                     ]));
                 }
+
+                // tell pubsub actor to remove broadcast channels that now have no receivers
+                pubsub.cleanup_channels(to_unsub.clone()).await;
 
                 if subs.is_empty() {
                     mode = RedisMode::Normal;
