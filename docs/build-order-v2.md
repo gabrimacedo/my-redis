@@ -164,15 +164,15 @@ For each type (SimpleString, Error, Integer, BulkString, Null, Array):
 - [x] Green
 
 ### 6b: UNSUBSCRIBE
-- [ ] Write test: subscribe to "ch1" and "ch2", unsubscribe from "ch1",
+- [x] Write test: subscribe to "ch1" and "ch2", unsubscribe from "ch1",
   confirm count decreases, still receives on "ch2"
-- [ ] Write test: unsubscribe from all (no args), count reaches 0
-- [ ] Green
+- [x] Write test: unsubscribe from all (no args), count reaches 0
+- [x] Green
 
 ### 6c: Subscriber mode restrictions
-- [ ] Write test: subscribed client sends SET, expect error
-- [ ] Write test: subscribed client sends PING, expect PONG (allowed)
-- [ ] Green
+- [x] Write test: subscribed client sends SET, expect error
+- [x] Write test: subscribed client sends PING, expect PONG (allowed)
+- [x] Green
 
 ---
 
