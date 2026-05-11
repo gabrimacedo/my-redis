@@ -37,6 +37,22 @@ pub async fn get_response(conn: &mut TcpStream) -> Frame {
     frame
 }
 
+pub async fn send_cmd_multi_response(conn: &mut TcpStream, cmd: &[u8]) -> Vec<Frame> {
+    let _ = conn.write(cmd).await.unwrap();
+    let mut resp = [0u8; 1024];
+    let n = conn.read(&mut resp).await.unwrap();
+
+    let mut response_frames = Vec::new();
+    let mut offset = 0;
+    while offset < n {
+        let (frame, consumed) = Frame::decode(&resp[offset..n]);
+        response_frames.push(frame);
+        offset += consumed;
+    }
+
+    response_frames
+}
+
 pub async fn send_multiple_cmds(conn: &mut TcpStream, cmds: Vec<Vec<u8>>) -> Vec<Frame> {
     let bundled_cmds = cmds.into_iter().flatten().collect::<Vec<u8>>();
     let _ = conn.write(&bundled_cmds).await.unwrap();
