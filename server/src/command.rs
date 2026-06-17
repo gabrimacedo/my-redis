@@ -201,6 +201,7 @@ impl Command {
                     message: args.remove(0),
                 }))
             }
+            "MULTI" => Ok(Command::Store(StoreCommand::Echo(b"OK".to_vec()))),
             _ => Err(format!("ERR unknown command '{}'", cmd)),
         }
     }

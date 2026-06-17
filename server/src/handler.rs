@@ -22,6 +22,7 @@ macro_rules! client_err {
 enum RedisMode {
     Normal,
     Subscription,
+    Transaction,
 }
 
 pub async fn handle_client(
